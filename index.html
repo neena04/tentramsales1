@@ -58,7 +58,7 @@
 <header>
   <div>
     <h1>📊 Tentram CS — Funnel Dashboard</h1>
-    <p>Generated 2026-06-22 18:06 WIB · All data embedded — filter without re-running</p>
+    <p>Generated 2026-06-22 18:14 WIB · All data embedded — filter without re-running</p>
   </div>
 </header>
 
@@ -249,17 +249,12 @@ function computeFunnel(leads) {
     }
   });
 
-  // Re-compute properly: for each stage, count leads whose timeline includes it OR a later stage
+  // Re-compute properly: count only leads whose actual event timeline shows
+  // they visited this stage or a later funnel stage (ignoring WON/LOST as proxies)
   const proper = FUNNEL_ORDER.map((sid, idx) => {
     return leads.filter(l => {
-      const visited = l.timeline.map(t => t[1]);
-      const statusOk = l.status_id === WON_ID || l.status_id === LOST_ID ||
-                       FUNNEL_ORDER.indexOf(l.status_id) >= idx;
-      const visitedOk = visited.some(s => {
-        const i = FUNNEL_ORDER.indexOf(s);
-        return i >= idx || s === WON_ID;
-      });
-      return statusOk || visitedOk;
+      const visited = new Set(l.timeline.map(t => t[1]));
+      return FUNNEL_ORDER.slice(idx).some(s => visited.has(s));
     }).length;
   });
 
