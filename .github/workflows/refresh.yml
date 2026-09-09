@@ -1,0 +1,49 @@
+name: Refresh sales tables
+
+# 00:00 UTC = 07:00 WIB. Runs in GitHub's cloud, so it does not depend on
+# anyone's laptop being awake.
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:        # lets you trigger a refresh by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-sales-tables
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sales.html from Kommo
+        env:
+          KOMMO_TOKEN: ${{ secrets.KOMMO_TOKEN }}
+          SALES_OUT: sales.html
+        run: |
+          if [ -z "$KOMMO_TOKEN" ]; then
+            echo "::error::KOMMO_TOKEN secret is not set (Settings -> Secrets and variables -> Actions)"
+            exit 1
+          fi
+          python3 kommo_sales_tables.py --no-git
+
+      - name: Commit and push if it changed
+        run: |
+          if git diff --quiet -- sales.html; then
+            echo "sales.html unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sales.html
+          git commit -m "sales tables $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB"
+          git push
