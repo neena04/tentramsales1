@@ -920,6 +920,18 @@ def main():
             subprocess.run(["git", "-C", repo, "add", "sales.html"], check=True)
             subprocess.run(["git", "-C", repo, "commit", "-m",
                             f"sales tables {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
+            # The GitHub Actions job pushes to this branch too, so a local run is
+            # usually behind. Rebase first, keeping the freshly generated file on any
+            # conflict — sales.html is generated output, never hand-edited.
+            subprocess.run(["git", "-C", repo, "fetch", "origin"], check=True)
+            r = subprocess.run(["git", "-C", repo, "-c", "core.editor=true",
+                                "rebase", "origin/main"])
+            if r.returncode != 0:
+                subprocess.run(["git", "-C", repo, "checkout", "--theirs", "sales.html"])
+                subprocess.run(["git", "-C", repo, "add", "sales.html"], check=True)
+                subprocess.run(["git", "-C", repo, "-c", "core.editor=true",
+                                "rebase", "--continue"],
+                               env={**os.environ, "GIT_EDITOR": "true"}, check=True)
             subprocess.run(["git", "-C", repo, "push"], check=True)
             print("Pushed -> Vercel will deploy /sales.html")
         except subprocess.CalledProcessError as e:
