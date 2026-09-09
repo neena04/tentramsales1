@@ -52,8 +52,7 @@
   .box.amber{border-left:3px solid #fdcb6e}
   .box.amber > h2{color:#9a7b1f}
   .r-total td{background:#fbfaff;font-weight:700;border-top:1px solid #e8e8e8}
-  #t-source th:not(.c-metric),#t-source td:not(.c-metric){min-width:112px}
-  #t-source .c-metric{min-width:210px}
+  #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
                   border-radius:2px;vertical-align:-1px;margin-right:5px}
@@ -74,7 +73,7 @@
 
 <header>
   <h1>Tentram CS — Sales Tables</h1>
-  <p>Pipeline Tentram CS · di-generate 2026-09-09 11:19 WIB · semua lead tertanam di halaman ini</p>
+  <p>Pipeline Tentram CS · di-generate 2026-09-09 11:31 WIB · semua lead tertanam di halaman ini</p>
 </header>
 
 <div class="controls">
@@ -126,9 +125,10 @@
 </div>
 
 <div class="box">
-  <h2>Sumber Leads — deal yang Closed - Won</h2>
-  <div class="sub">Semua tipe customer digabung (B2C + B2B + tanpa Customer Type).
-    Dihitung dari tanggal closing, sama seperti baris Sales di atas</div>
+  <h2>Sumber Leads — per hari</h2>
+  <div class="sub">Deal yang menang (Closed - Won + Work Scheduled), semua tipe customer
+    digabung. Dasar tanggal sama dengan baris Sales di atas, jadi baris TOTAL di sini =
+    Tabel 1 + Tabel 2 + Tabel 3</div>
   <div class="scroller"><table id="t-source"></table></div>
 </div>
 
@@ -377,51 +377,70 @@ function renderRecon(ym, cols, imm){
   document.getElementById('t-recon').innerHTML = head + body + '</tbody>';
 }
 
-// ── Sumber Leads for won deals, all customer types ────────────────────────────
+// ── Sumber Leads per day, all customer types ──────────────────────────────────
+// Same date basis and same lead set as the Sales rows of tables 1-3, so the TOTAL
+// rows here equal Tabel1 + Tabel2 + Tabel3 for every column.
 function renderSource(ym, cols){
-  const dates = new Set(cols.flatMap(c => c.dates));
-  const agg = {};
-  let nWon = 0, vWon = 0, nSch = 0, vSch = 0;
-
+  const allDates = cols.flatMap(c => c.dates);
+  const cnt = {}, val = {};          // source -> {date -> n}
   LEADS.forEach(l => {
-    if(!l.ad || !dates.has(l.ad)) return;          // same date basis as the Sales rows
-    const a = agg[l.sl] || (agg[l.sl] = {won:0, wonRp:0, sch:0, schRp:0});
-    if(l.as === 'won'){ a.won++; a.wonRp += l.p; nWon++; vWon += l.p; }
-    else              { a.sch++; a.schRp += l.p; nSch++; vSch += l.p; }
+    if(!l.ad) return;
+    (cnt[l.sl] || (cnt[l.sl] = {}));
+    (val[l.sl] || (val[l.sl] = {}));
+    cnt[l.sl][l.ad] = (cnt[l.sl][l.ad] || 0) + 1;
+    val[l.sl][l.ad] = (val[l.sl][l.ad] || 0) + l.p;
   });
 
-  const rows = Object.entries(agg).sort((a,b) =>
-    (b[1].won - a[1].won) || (b[1].wonRp - a[1].wonRp));
+  // only sources that actually appear in this month, busiest first
+  const sources = Object.keys(cnt)
+    .map(s => [s, sumOver(cnt[s], allDates), sumOver(val[s], allDates)])
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => (b[1] - a[1]) || (b[2] - a[2]))
+    .map(([s]) => s);
 
-  let h = '<thead><tr>' +
-    '<th class="c-metric">Sumber Leads</th>' +
-    '<th>Closed - Won</th><th>Closed - Won — Rp</th><th>% dari Rp</th>' +
-    '<th>Work Scheduled</th><th>Work Scheduled — Rp</th>' +
-    '<th class="c-total">Total Rp</th></tr></thead><tbody>';
+  let head = '<thead><tr><th class="c-metric">Sumber Leads</th>';
+  cols.forEach(c => { head += `<th class="c-day">${c.label}</th>`; });
+  head += '<th class="c-total">Total</th></tr></thead>';
 
-  if(!rows.length){
-    h += `<tr><td class="c-metric">—</td><td colspan="6" style="text-align:left;color:#b2bec3">` +
-         `Belum ada deal yang closing di bulan ini</td></tr>`;
+  if(!sources.length){
+    document.getElementById('t-source').innerHTML = head +
+      `<tbody><tr><td class="c-metric">—</td><td colspan="${cols.length+1}" ` +
+      `style="text-align:left;color:#b2bec3">Belum ada deal yang closing di bulan ini</td>` +
+      `</tr></tbody>`;
+    return;
   }
-  rows.forEach(([src, a]) => {
-    const tot = a.wonRp + a.schRp;
-    const pct = vWon ? (a.wonRp / vWon * 100) : 0;
-    h += `<tr><td class="c-metric">${src}</td>` +
-         `<td>${fmtInt(a.won)}</td>` +
-         `<td title="${fmtRpFull(a.wonRp)}">${fmtRp(a.wonRp)}</td>` +
-         `<td>${a.wonRp ? pct.toFixed(0)+'%' : '<span class="zero">—</span>'}</td>` +
-         `<td>${fmtInt(a.sch)}</td>` +
-         `<td title="${fmtRpFull(a.schRp)}">${fmtRp(a.schRp)}</td>` +
-         `<td class="c-total" title="${fmtRpFull(tot)}">${fmtRp(tot)}</td></tr>`;
-  });
-  if(rows.length){
-    h += '<tr class="r-total"><td class="c-metric">TOTAL</td>' +
-         `<td>${fmtInt(nWon)}</td><td title="${fmtRpFull(vWon)}">${fmtRp(vWon)}</td>` +
-         `<td>${vWon ? '100%' : '<span class="zero">—</span>'}</td>` +
-         `<td>${fmtInt(nSch)}</td><td title="${fmtRpFull(vSch)}">${fmtRp(vSch)}</td>` +
-         `<td class="c-total" title="${fmtRpFull(vWon+vSch)}">${fmtRp(vWon+vSch)}</td></tr>`;
-  }
-  document.getElementById('t-source').innerHTML = h + '</tbody>';
+
+  const line = (label, map, money, cls) =>
+    `<tr class="${cls||''}${money ? ' r-sales' : ''}"><td class="c-metric">${label}</td>` +
+    cols.map(c => {
+      const v = sumOver(map, c.dates);
+      return money ? `<td title="${fmtRpFull(v)}">${fmtRp(v)}</td>` : `<td>${fmtInt(v)}</td>`;
+    }).join('') +
+    (money
+      ? `<td class="c-total" title="${fmtRpFull(sumOver(map, allDates))}">${fmtRp(sumOver(map, allDates))}</td></tr>`
+      : `<td class="c-total">${fmtInt(sumOver(map, allDates))}</td></tr>`);
+
+  // a per-date total across every source
+  const totalMap = m => {
+    const t = {};
+    Object.values(m).forEach(byDate => {
+      for(const d in byDate) t[d] = (t[d] || 0) + byDate[d];
+    });
+    return t;
+  };
+
+  let body = '<tbody>';
+  body += `<tr class="grp"><td class="c-metric">Jumlah deal</td>` +
+          `<td colspan="${cols.length + 1}"></td></tr>`;
+  sources.forEach(s => { body += line(s, cnt[s], false); });
+  body += line('TOTAL deal', totalMap(cnt), false, 'r-total');
+
+  body += `<tr class="grp"><td class="c-metric">Nilai (Rp)</td>` +
+          `<td colspan="${cols.length + 1}"></td></tr>`;
+  sources.forEach(s => { body += line(s, val[s], true); });
+  body += line('TOTAL nilai', totalMap(val), true, 'r-total');
+
+  document.getElementById('t-source').innerHTML = head + body + '</tbody>';
 }
 
 // ── Data quality panel (spec §7) ──────────────────────────────────────────────
