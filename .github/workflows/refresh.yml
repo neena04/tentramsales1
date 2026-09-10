@@ -1,10 +1,15 @@
 name: Refresh sales tables
 
-# 00:00 UTC = 07:00 WIB. Runs in GitHub's cloud, so it does not depend on
+# 23:38 UTC = 06:38 WIB. Runs in GitHub's cloud, so it does not depend on
 # anyone's laptop being awake.
+#
+# Deliberately NOT on the hour: GitHub queues every repository's cron together and
+# drops or badly delays runs at popular times. "0 0 * * *" was skipped entirely on
+# 2026-09-10 — zero scheduled runs fired. An odd minute, offset earlier so a delay
+# still lands before 07:00 WIB, is the documented workaround.
 on:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "38 23 * * *"
   workflow_dispatch:        # lets you trigger a refresh by hand from the Actions tab
 
 permissions:
