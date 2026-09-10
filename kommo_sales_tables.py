@@ -457,6 +457,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .box.amber > h2{color:#9a7b1f}
   .r-total td{background:#fbfaff;font-weight:700;border-top:1px solid #e8e8e8}
   .warnnum{color:#e17055;font-weight:700}
+  .btn-sm{padding:4px 10px;font-size:11px}
+  #t-todo .c-num{min-width:70px}
+  #t-todo .c-ids{text-align:left;white-space:normal;line-height:2;min-width:420px}
+  #t-todo .c-ids a{display:inline-block;background:#f4f3ff;color:#6c5ce7;text-decoration:none;
+    border-radius:4px;padding:1px 7px;margin:0 3px 3px 0;font-variant-numeric:tabular-nums}
+  #t-todo .c-ids a:hover{background:#6c5ce7;color:#fff}
+  #t-todo .c-metric{min-width:110px}
   #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
@@ -527,6 +534,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="box amber">
+  <h2>Daftar lead tanpa Customer Type — untuk diisi CS</h2>
+  <div class="sub">Lead dari Tabel 3, dikelompokkan per tanggal masuk. Klik nomornya untuk
+    langsung membuka lead di Kommo, lalu isi Customer Type di kontak utamanya</div>
+  <div class="scroller"><table id="t-todo"></table></div>
+  <div class="legend" id="todo-foot"></div>
+</div>
+
 <div class="box">
   <h2>Rekonsiliasi — cocokkan dengan Kommo</h2>
   <div class="sub">Jumlah lead masuk per hari, semua tipe. <b>Requests belum diterima</b>
@@ -564,6 +579,7 @@ const DQ    = __DQ__;
 const REQUESTS = __REQUESTS__;
 const TARGETS = __TARGETS__;
 const TODAY = "__TODAY__";
+const SUBDOMAIN = "__SUBDOMAIN__";
 const GENERATED_AT = "__GENERATED_DATE__";
 const MONTHS_ID = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 
@@ -879,6 +895,66 @@ function renderSource(ym, cols){
   document.getElementById('t-source').innerHTML = head + body + '</tbody>';
 }
 
+// ── The CS to-do list: which leads still need a Customer Type ─────────────────
+function renderTodo(ym, cols){
+  const dates = new Set(cols.flatMap(c => c.dates));
+  const byDate = {};
+  LEADS.forEach(l => {
+    if(l.t !== 'Unknown' || !l.cd || !dates.has(l.cd)) return;
+    (byDate[l.cd] || (byDate[l.cd] = [])).push(l.id);
+  });
+
+  const days = Object.keys(byDate).sort().reverse();   // newest first — that is the backlog
+  let h = '<thead><tr><th class="c-metric">Tanggal</th><th class="c-num">Jumlah</th>' +
+          '<th class="c-ids">Lead — klik untuk buka di Kommo</th></tr></thead><tbody>';
+
+  if(!days.length){
+    h += `<tr><td class="c-metric">—</td><td class="c-num">0</td>` +
+         `<td class="c-ids" style="color:#00b894">Semua lead bulan ini sudah punya Customer Type</td></tr>`;
+  }
+  days.forEach(d => {
+    const ids = byDate[d].sort((a,b) => b - a);
+    h += `<tr><td class="c-metric">${dayLabel(d)}</td>` +
+         `<td class="c-num">${ids.length}</td><td class="c-ids">` +
+         ids.map(id => `<a href="https://${SUBDOMAIN}.kommo.com/leads/detail/${id}" ` +
+                       `target="_blank" rel="noopener">${id}</a>`).join(' ') +
+         '</td></tr>';
+  });
+
+  const all = days.flatMap(d => byDate[d]);
+  if(all.length){
+    h += `<tr class="r-total"><td class="c-metric">TOTAL</td><td class="c-num">${all.length}</td>` +
+         `<td class="c-ids"><button class="btn btn-sm" onclick='copyIds(${JSON.stringify(all)})'>` +
+         `Salin semua ID</button> <span id="copy-msg" class="rstat"></span></td></tr>`;
+  }
+  document.getElementById('t-todo').innerHTML = h + '</tbody>';
+
+  const total = LEADS.filter(l => l.t === 'Unknown').length;
+  document.getElementById('todo-foot').innerHTML =
+    `Bulan ini <b>${all.length}</b> lead belum punya Customer Type. ` +
+    `Di seluruh pipeline ada <b>${total}</b> — ganti bulan di atas untuk melihat sisanya.`;
+}
+
+function copyIds(ids){
+  const text = ids.join('\n');
+  const done = ok => {
+    const el = document.getElementById('copy-msg');
+    el.textContent = ok ? `${ids.length} ID disalin` : 'Gagal menyalin';
+    el.className = 'rstat ' + (ok ? 'ok' : 'err');
+    setTimeout(() => { el.textContent = ''; }, 4000);
+  };
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch(e){}
+    document.body.removeChild(ta); done(ok);
+  }
+}
+
 // ── Data quality panel (spec §7) ──────────────────────────────────────────────
 function renderDQ(){
   const items = [
@@ -975,6 +1051,7 @@ function render(){
   renderTable('Unknown', ym, cols, imm);
   renderRecon(ym, cols, imm);
   renderSource(ym, cols);
+  renderTodo(ym, cols);
   const ageDays = Math.floor((Date.now() - new Date(GENERATED_AT + 'T00:00:00').getTime())/864e5);
   const badge = document.getElementById('stale-badge');
   if(ageDays >= 1){
@@ -1016,6 +1093,7 @@ def build_html(dataset, dq, unsorted=None):
         .replace("__DQ__",        json.dumps(dq))
         .replace("__REQUESTS__",  json.dumps(unsorted or {}))
         .replace("__TARGETS__",   json.dumps(TARGETS))
+        .replace("__SUBDOMAIN__", SUBDOMAIN)
         .replace("__TODAY__",     (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED_DATE__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d %H:%M")))
