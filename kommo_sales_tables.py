@@ -415,6 +415,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .r-reason td.c-metric{white-space:nowrap;font-size:12px;color:#2d3436}
   .zero{color:#dfe3e8}
   .legend{padding:12px 24px 18px;font-size:11px;color:#8a8f98;border-top:1px solid #f1f2f6}
+  .btn{border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;
+       cursor:pointer;background:#6c5ce7;color:#fff}
+  .btn:hover{background:#5b4bd6}
+  .btn:disabled{background:#c8c9d4;cursor:default}
+  .rstat{font-size:11px;color:#636e72}
+  .rstat.err{color:#c0392b}
+  .rstat.ok{color:#00b894}
+  .stale{background:#fff8e6;border:1px solid #ffeaa7;color:#7a6a3a;
+         padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600}
   .box.amber{border-left:3px solid #fdcb6e}
   .box.amber > h2{color:#9a7b1f}
   .r-total td{background:#fbfaff;font-weight:700;border-top:1px solid #e8e8e8}
@@ -450,6 +459,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button id="m-compact" onclick="setMode('compact')">Ringkas</button>
   </div>
   <span style="font-size:11px;color:#b2bec3" id="lead-count"></span>
+  <span id="stale-badge" style="display:none"></span>
+  <span style="margin-left:auto;display:flex;align-items:center;gap:10px">
+    <span class="rstat" id="refresh-status"></span>
+    <button class="btn" id="refresh-btn" onclick="doRefresh()">Refresh data</button>
+  </span>
 </div>
 
 <div class="box">
@@ -517,6 +531,7 @@ const LEADS = __LEADS__;
 const DQ    = __DQ__;
 const TARGETS = __TARGETS__;
 const TODAY = "__TODAY__";
+const GENERATED_AT = "__GENERATED_DATE__";
 const MONTHS_ID = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 
 let mode = 'daily';
@@ -834,6 +849,73 @@ function renderDQ(){
      <div class="k">${k}</div></div>`).join('');
 }
 
+// ── Manual refresh ────────────────────────────────────────────────────────────
+// The page holds no GitHub token — it posts a shared password to /api/refresh, which
+// dispatches the workflow server-side. Run status comes from GitHub's public API.
+const GH_RUNS = "https://api.github.com/repos/neena04/tentramsales1/actions/workflows/refresh.yml/runs?per_page=1";
+
+function setStatus(msg, cls){
+  const el = document.getElementById('refresh-status');
+  el.textContent = msg || '';
+  el.className = 'rstat' + (cls ? ' ' + cls : '');
+}
+
+async function doRefresh(){
+  const pw = prompt('Password untuk refresh data:');
+  if(pw === null) return;
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  setStatus('Mengirim permintaan…');
+  try {
+    const r = await fetch('/api/refresh', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw})
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok){
+      setStatus(d.error || `Gagal (HTTP ${r.status})`, 'err');
+      btn.disabled = false;
+      return;
+    }
+    setStatus('Refresh dimulai — kira-kira 2 menit…');
+    pollRun();
+  } catch(e){
+    setStatus('Tidak bisa menghubungi server: ' + e.message, 'err');
+    btn.disabled = false;
+  }
+}
+
+async function pollRun(){
+  const started = Date.now();
+  const btn = document.getElementById('refresh-btn');
+  const tick = async () => {
+    if(Date.now() - started > 10*60*1000){
+      setStatus('Timeout — cek tab Actions di GitHub', 'err');
+      btn.disabled = false;
+      return;
+    }
+    try {
+      const d = await (await fetch(GH_RUNS)).json();
+      const run = d.workflow_runs && d.workflow_runs[0];
+      if(run && run.status === 'completed'){
+        if(run.conclusion === 'success'){
+          setStatus('Selesai — memuat ulang halaman…', 'ok');
+          setTimeout(() => location.reload(true), 20000);
+        } else {
+          setStatus('Gagal: ' + run.conclusion, 'err');
+          btn.disabled = false;
+        }
+        return;
+      }
+      const secs = Math.round((Date.now() - started)/1000);
+      setStatus(`Sedang berjalan… ${secs}s`);
+    } catch(e){ /* keep polling */ }
+    setTimeout(tick, 5000);
+  };
+  setTimeout(tick, 5000);
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 function render(){
   const ym = document.getElementById('month').value;
@@ -844,6 +926,16 @@ function render(){
   renderTable('Unknown', ym, cols, imm);
   renderRecon(ym, cols, imm);
   renderSource(ym, cols);
+  const ageDays = Math.floor((Date.now() - new Date(GENERATED_AT + 'T00:00:00').getTime())/864e5);
+  const badge = document.getElementById('stale-badge');
+  if(ageDays >= 1){
+    badge.style.display = '';
+    badge.className = 'stale';
+    badge.textContent = ageDays === 1 ? 'Data kemarin — belum di-refresh hari ini'
+                                      : `Data sudah ${ageDays} hari — belum di-refresh`;
+  } else {
+    badge.style.display = 'none';
+  }
   const n = c => LEADS.filter(l => l.t === c).length;
   document.getElementById('lead-count').textContent =
     `${LEADS.length.toLocaleString('id-ID')} lead · B2C ${n('B2C')} · B2B ${n('B2B')} · Unknown ${n('Unknown')}`;
@@ -875,6 +967,7 @@ def build_html(dataset, dq):
         .replace("__DQ__",        json.dumps(dq))
         .replace("__TARGETS__",   json.dumps(TARGETS))
         .replace("__TODAY__",     (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
+        .replace("__GENERATED_DATE__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d %H:%M")))
 
 
