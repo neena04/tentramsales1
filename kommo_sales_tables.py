@@ -138,6 +138,35 @@ def fetch_contacts(contact_ids):
     return contacts
 
 
+def fetch_unsorted():
+    """Incoming chats nobody has accepted yet.
+
+    Kommo's board counts these alongside leads ("Requests: 7"), but they are NOT
+    leads — /api/v4/leads does not return them, and they have no stage, value or
+    contact until someone accepts them. This is a snapshot of what is waiting right
+    now, keyed on arrival date: a day shows 0 once its requests have been accepted.
+    """
+    out, page = defaultdict(int), 1
+    print("Fetching unsorted", end="", flush=True)
+    while True:
+        d = api_get(f"/leads/unsorted?limit=250&page={page}")
+        batch = (d.get("_embedded") or {}).get("unsorted", [])
+        if not batch:
+            break
+        for u in batch:
+            if u.get("pipeline_id") == PIPELINE_ID:
+                day = ts_to_date(u.get("created_at"))
+                if day:
+                    out[day] += 1
+        print(".", end="", flush=True)
+        if len(batch) < 250:
+            break
+        page += 1
+        time.sleep(0.15)
+    print(f" {sum(out.values())} waiting")
+    return dict(out)
+
+
 def fetch_events():
     """lead_status_changed history — used for the qualified test (spec §5)."""
     by_lead = defaultdict(list)
@@ -427,6 +456,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .box.amber{border-left:3px solid #fdcb6e}
   .box.amber > h2{color:#9a7b1f}
   .r-total td{background:#fbfaff;font-weight:700;border-top:1px solid #e8e8e8}
+  .warnnum{color:#e17055;font-weight:700}
   #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
@@ -499,8 +529,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="box">
   <h2>Rekonsiliasi — cocokkan dengan Kommo</h2>
-  <div class="sub">Jumlah lead masuk per hari, semua tipe. Baris <b>Total</b> inilah yang
-    harus sama dengan angka di Kommo; ketiga tabel di atas adalah pecahannya</div>
+  <div class="sub">Jumlah lead masuk per hari, semua tipe. <b>Requests belum diterima</b>
+    adalah chat masuk yang belum di-accept CS — belum jadi lead, jadi belum muncul di
+    tabel mana pun, tapi ikut terhitung di board Kommo. Angkanya adalah kondisi saat ini,
+    bukan riwayat: begitu di-accept, angkanya turun dan lead-nya pindah ke atas</div>
   <div class="scroller"><table id="t-recon"></table></div>
 </div>
 
@@ -529,6 +561,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS__;
 const DQ    = __DQ__;
+const REQUESTS = __REQUESTS__;
 const TARGETS = __TARGETS__;
 const TODAY = "__TODAY__";
 const GENERATED_AT = "__GENERATED_DATE__";
@@ -757,9 +790,25 @@ function renderRecon(ym, cols, imm){
 
   const totalOf = ds => ['B2C','B2B','Unknown']
     .reduce((s,k) => s + sumOver(m[k].inbound, ds), 0);
-  body += '<tr class="r-total"><td class="c-metric">Total — cocokkan dengan Kommo</td>' +
+  body += '<tr class="r-total"><td class="c-metric">TOTAL lead</td>' +
           cols.map(c => `<td>${fmtInt(totalOf(c.dates))}</td>`).join('') +
           `<td class="c-total">${fmtInt(totalOf(allDates))}</td></tr>`;
+
+  // Chats nobody has accepted yet. Not leads — no stage, value or contact — but
+  // Kommo's board counts them, which is why its number can exceed the tables above.
+  const reqOf = ds => ds.reduce((s,d) => s + (REQUESTS[d] || 0), 0);
+  const anyReq = Object.keys(REQUESTS).length > 0;
+  body += `<tr${anyReq ? ' class="r-req"' : ''}>` +
+          '<td class="c-metric">Requests belum diterima</td>' +
+          cols.map(c => {
+            const n = reqOf(c.dates);
+            return `<td${n ? ' class="warnnum"' : ''}>${fmtInt(n)}</td>`;
+          }).join('') +
+          `<td class="c-total">${fmtInt(reqOf(allDates))}</td></tr>`;
+
+  body += '<tr class="r-total"><td class="c-metric">TOTAL + requests — angka di board Kommo</td>' +
+          cols.map(c => `<td>${fmtInt(totalOf(c.dates) + reqOf(c.dates))}</td>`).join('') +
+          `<td class="c-total">${fmtInt(totalOf(allDates) + reqOf(allDates))}</td></tr>`;
 
   document.getElementById('t-recon').innerHTML = head + body + '</tbody>';
 }
@@ -960,11 +1009,12 @@ function render(){
 """
 
 
-def build_html(dataset, dq):
+def build_html(dataset, dq, unsorted=None):
     tpl = HTML_TEMPLATE.replace("</script>", JS_RENDER + "\n</script>")
     return (tpl
         .replace("__LEADS__",     json.dumps(dataset, ensure_ascii=False, separators=(",", ":")))
         .replace("__DQ__",        json.dumps(dq))
+        .replace("__REQUESTS__",  json.dumps(unsorted or {}))
         .replace("__TARGETS__",   json.dumps(TARGETS))
         .replace("__TODAY__",     (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED_DATE__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
@@ -982,6 +1032,7 @@ def main():
                       for c in ((l.get("_embedded") or {}).get("contacts") or [])}
     contacts       = fetch_contacts(contact_ids)
     events_by_lead = fetch_events()
+    unsorted       = fetch_unsorted()
 
     dataset, dq = build_dataset(leads, contacts, events_by_lead, loss_reasons)
 
@@ -993,7 +1044,7 @@ def main():
         buckets[r["t"]] += 1
     print(f"\nBuckets: B2C {buckets['B2C']} · B2B {buckets['B2B']} · Unknown {buckets['Unknown']}")
 
-    html = build_html(dataset, dq)
+    html = build_html(dataset, dq, unsorted)
     # SALES_OUT lets the GitHub Actions runner write into the checked-out repo,
     # where ~/tentramsales1 does not exist.
     out = os.environ.get("SALES_OUT") or os.path.expanduser("~/tentramsales1/sales.html")
@@ -1017,7 +1068,10 @@ def main():
             # usually behind. Rebase first, keeping the freshly generated file on any
             # conflict — sales.html is generated output, never hand-edited.
             subprocess.run(["git", "-C", repo, "fetch", "origin"], check=True)
+            # autostash so an unrelated edit in the working tree does not abort the
+            # rebase and leave the build unpushed
             r = subprocess.run(["git", "-C", repo, "-c", "core.editor=true",
+                                "-c", "rebase.autoStash=true",
                                 "rebase", "origin/main"])
             if r.returncode != 0:
                 subprocess.run(["git", "-C", repo, "checkout", "--theirs", "sales.html"])
