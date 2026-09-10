@@ -105,3 +105,31 @@ currently qualifies via the price proxy alone — it is counted in the panel.
   script (`{"B2C": {"inbound": {"2026-09": 500}, ...}}`); unset shows "—".
 - **§7 check 4** (Sales value vs Produk total − Nominal Diskon) — needs Produk line items,
   which are out of scope per §9.
+
+## The "Refresh data" button
+
+`api/refresh.js` dispatches the GitHub Actions workflow so people without GitHub
+access can rebuild the dashboard themselves. The page is public, so it never carries
+a token: it posts a shared password, the function checks it in constant time and
+holds the GitHub token server-side. Run progress is polled from GitHub's public API,
+which needs no secret.
+
+Two Vercel environment variables are required (project `tentramsales1`):
+
+| Variable | What |
+|---|---|
+| `GH_TOKEN` | fine-grained PAT for `neena04/tentramsales1`, Actions: read+write |
+| `REFRESH_PASSWORD` | shared password the team types into the dashboard |
+
+Vercel does not redeploy when an environment variable changes — push a commit or
+redeploy by hand, or the function keeps running with the old (or missing) values.
+
+The PAT expires (90 days by default). When it does, the button starts failing with
+HTTP 401 and nothing else announces it; regenerate the token and update `GH_TOKEN`.
+
+To check the wiring without knowing the password:
+
+    curl -s -X POST https://tentramsales1.vercel.app/api/refresh \
+      -H 'Content-Type: application/json' -d '{"password":"wrong"}'
+
+`401 Password salah` means it is configured. `500` means the variables are missing.
