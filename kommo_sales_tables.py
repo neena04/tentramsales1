@@ -403,8 +403,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
        background:#f5f6fa;color:#2d3436;padding-bottom:48px}
-  header{background:#6c5ce7;color:#fff;padding:20px 32px}
+  header{background:#6c5ce7;color:#fff;padding:20px 32px;display:flex;
+         align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
   header h1{font-size:20px;font-weight:700}
+  .navbtn{background:#fff;color:#6c5ce7;text-decoration:none;border-radius:6px;
+          padding:8px 14px;font-size:12px;font-weight:700;white-space:nowrap}
+  .navbtn:hover{background:#f4f3ff}
   header p{opacity:.75;font-size:12px;margin-top:4px}
   .controls{background:#fff;border-bottom:1px solid #eee;padding:14px 32px;
             display:flex;gap:14px;align-items:center;flex-wrap:wrap;
@@ -484,8 +488,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 
 <header>
-  <h1>Tentram CS — Sales Tables</h1>
-  <p>Pipeline Tentram CS · di-generate __GENERATED__ WIB · semua lead tertanam di halaman ini</p>
+  <div>
+    <h1>Tentram CS — Sales Tables</h1>
+    <p>Pipeline Tentram CS · di-generate __GENERATED__ WIB · semua lead tertanam di halaman ini</p>
+  </div>
+  <a class="navbtn" href="cs.html">CS Quality →</a>
 </header>
 
 <div class="controls">
