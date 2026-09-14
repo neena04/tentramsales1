@@ -38,10 +38,14 @@ HANG_LIMIT_MIN       = 15                       # "customer left hanging" thresh
 # the WhatsApp phone app. Verified on 30 days of data (2026-09-14):
 #   - auto-replies land within seconds of the customer message (humans: 10 of 1,881
 #     replies were <= 5s)
-#   - scheduled broadcasts hit many leads at once — 337 of 339 went out at 08:00
+#   - the daily automated reminder (to customers who went quiet) hits many leads at once,
+#     always starting 08:00 — Nina confirmed it is automated, 2026-09-14
+# The burst test alone also caught CS replying from the phone to 4 customers in 3 minutes
+# (lead 68287102, 13 Sep 19:47), so it only applies inside the reminder window.
 AUTOREPLY_SEC        = 15
 BROADCAST_WINDOW_SEC = 90                       # +- around each message
 BROADCAST_MIN_LEADS  = 4
+REMINDER_WINDOW_MIN  = (8 * 60, 8 * 60 + 15)    # 08:00–08:15 WIB, minutes after midnight
 
 TOKEN = os.environ.get("KOMMO_TOKEN", "")
 if not TOKEN:
@@ -157,9 +161,15 @@ def pipeline_at(timeline, ts, current):
     return timeline[0][1] or current
 
 
+def in_reminder_window(ts):
+    minute = ((ts + TZ_OFFSET * 3600) % 86400) // 60
+    return REMINDER_WINDOW_MIN[0] <= minute < REMINDER_WINDOW_MIN[1]
+
+
 def find_broadcasts(chat_events):
     out0 = sorted((e for e in chat_events
-                   if e["type"] == "outgoing_chat_message" and not e.get("created_by")),
+                   if e["type"] == "outgoing_chat_message" and not e.get("created_by")
+                   and in_reminder_window(e["created_at"])),
                   key=lambda e: e["created_at"])
     ts = [e["created_at"] for e in out0]
     ids = set()
@@ -387,8 +397,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       jam kerja tidak masuk rata-rata pada mode ini. Mode <b>Jam penuh</b> memakai selisih jam
       biasa. Daftar &gt; 15 menit selalu memakai jam kerja.</li>
     <li><b>Pesan otomatis bukan balasan.</b> Auto-reply (terkirim ≤ 15 detik setelah pesan
-      customer, tanpa nama pengirim) dan broadcast (terkirim ke ≥ 4 lead dalam 3 menit,
-      mis. pesan terjadwal jam 08:00) diabaikan. Balasan tanpa nama pengirim yang bukan
+      customer, tanpa nama pengirim) dan pesan pengingat otomatis jam 08:00–08:15 (terkirim ke ≥ 4
+      lead dalam 3 menit) diabaikan. Balasan tanpa nama pengirim yang bukan
       otomatis dihitung sebagai balasan CS dari HP — ditandai <b>HP / WhatsApp</b>.</li>
     <li><b>Pipeline</b> = pipeline tempat lead berada saat chat masuk (dari riwayat
       perpindahan stage), jadi lead yang kemudian pindah pipeline tetap terhitung benar.
@@ -597,7 +607,7 @@ document.getElementById('t-resp').addEventListener('click', e => {
 });
 document.getElementById('meta-line').innerHTML =
   `<b>Data:</b> ${META.messages.toLocaleString('id')} pesan chat · ${(META.ignored_autoreply||0).toLocaleString('id')} auto-reply dan ` +
-  `${(META.ignored_broadcast||0).toLocaleString('id')} pesan broadcast diabaikan · ${(META.phone_replies||0).toLocaleString('id')} balasan dari HP · ` +
+  `${(META.ignored_broadcast||0).toLocaleString('id')} pesan pengingat 08:00 diabaikan · ${(META.phone_replies||0).toLocaleString('id')} balasan dari HP · ` +
   `${(META.msg_contact_only||0).toLocaleString('id')} pesan di kontak tanpa lead tidak bisa dipetakan ke pipeline.`;
 render();
 })();
