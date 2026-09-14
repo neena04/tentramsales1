@@ -22,7 +22,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # cs.html alone took 19 min locally (~450 Kommo calls, events endpoint is slow)
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -41,14 +42,21 @@ jobs:
           fi
           python3 kommo_sales_tables.py --no-git
 
+      - name: Build cs.html (CS Quality) from Kommo
+        env:
+          KOMMO_TOKEN: ${{ secrets.KOMMO_TOKEN }}
+          CS_OUT: cs.html
+        run: python3 kommo_cs_quality.py --no-git
+
       - name: Commit and push if it changed
         run: |
-          if git diff --quiet -- sales.html; then
-            echo "sales.html unchanged — nothing to commit"
+          # status, not diff: diff ignores a file that is not tracked yet
+          if [ -z "$(git status --porcelain -- sales.html cs.html)" ]; then
+            echo "sales.html and cs.html unchanged — nothing to commit"
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sales.html
+          git add sales.html cs.html
           git commit -m "sales tables $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB"
           git push
