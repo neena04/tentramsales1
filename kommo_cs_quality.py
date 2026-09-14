@@ -31,7 +31,7 @@ PIPE_CODE = {pid: i for i, (_, pids) in enumerate(PIPELINES) for pid in pids}
 # First chat event on the account is March 2026 (verified 2026-09-14).
 HISTORY_FROM = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
-WORK_START, WORK_END = 8, 22                    # working hours, WIB
+WORK_START, WORK_END = 9, 22                    # working hours, WIB (was 8; Nina, 2026-09-14)
 HANG_LIMIT_MIN       = 15                       # "customer left hanging" threshold
 
 # Outgoing messages with created_by = 0 are a mix of automation and CS replying from
@@ -356,7 +356,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button data-v="daily">Harian</button><button data-v="weekly">Mingguan</button>
   </div>
   <div class="seg" id="seg-basis">
-    <button data-v="work">Jam kerja 08–22</button><button data-v="clock">Jam penuh</button>
+    <button data-v="work">Jam kerja 09–22</button><button data-v="clock">Jam penuh</button>
   </div>
 </div>
 
@@ -375,7 +375,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="box red" id="flags">
   <h2>Customer menunggu lebih dari 15 menit</h2>
-  <div class="sub">Dihitung dalam jam kerja 08:00–22:00 WIB, semua jenis lead (baru / repeat,
+  <div class="sub">Dihitung dalam jam kerja 09:00–22:00 WIB, semua jenis lead (baru / repeat,
     semua sumber, B2C / B2B). Tanggal = tanggal chat customer.</div>
   <div class="flagbar">
     <label for="flag-day">Tanggal</label><select id="flag-day"></select>
@@ -392,8 +392,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       CS membalas.</li>
     <li><b>First response</b> = giliran pertama di setiap lead. <b>Consecutive response</b> =
       semua giliran sesudahnya.</li>
-    <li><b>Jam kerja 08:00–22:00 WIB.</b> Hanya menit di dalam jam kerja yang dihitung —
-      chat jam 21:50 yang dibalas jam 08:10 = 20 menit. Chat yang masuk <i>dan</i> dibalas di luar
+    <li><b>Jam kerja 09:00–22:00 WIB.</b> Hanya menit di dalam jam kerja yang dihitung —
+      chat jam 21:50 yang dibalas jam 09:10 = 20 menit. Chat yang masuk <i>dan</i> dibalas di luar
       jam kerja tidak masuk rata-rata pada mode ini. Mode <b>Jam penuh</b> memakai selisih jam
       biasa. Daftar &gt; 15 menit selalu memakai jam kerja.</li>
     <li><b>Pesan otomatis bukan balasan.</b> Auto-reply (terkirim ≤ 15 detik setelah pesan
@@ -449,7 +449,7 @@ try { Object.assign(S, JSON.parse(localStorage.getItem('csq') || '{}')); } catch
 const save = () => { try { localStorage.setItem('csq', JSON.stringify({pipe:S.pipe, mode:S.mode, basis:S.basis})); } catch(e) {} };
 
 const val = t => S.basis === 'work' ? t.w : t.c;
-// In working-hours mode a turn handled entirely outside 08–22 has no working-hours wait
+// In working-hours mode a turn handled entirely outside working hours has no working-hours wait
 // to measure; counting it as 0 would flatter the average.
 const counted = t => S.basis === 'clock' || t.w > 0 || inHours(t.s);
 
@@ -527,7 +527,7 @@ function renderTable(){
   document.getElementById('resp-title').textContent =
     'Waktu respons — ' + PIPES[S.pipe] + (S.mode === 'daily' ? ' · harian' : ' · mingguan');
   document.getElementById('resp-sub').innerHTML = S.basis === 'work'
-    ? 'Hanya menit di dalam jam kerja 08:00–22:00 WIB yang dihitung'
+    ? 'Hanya menit di dalam jam kerja 09:00–22:00 WIB yang dihitung'
     : 'Selisih jam penuh, termasuk malam hari';
 
   const mst = stats(first, end), bad = mst.late + mst.open;
