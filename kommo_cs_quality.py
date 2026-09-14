@@ -19,10 +19,14 @@ SUBDOMAIN = "tentram"
 BASE_URL  = f"https://{SUBDOMAIN}.kommo.com/api/v4"
 TZ_OFFSET = 7                                   # WIB
 
-# Order matters: index = pipeline code used in the embedded data.
-PIPELINES = [(13334859, "[Cleaning] Tentram CS"),
-             (13498915, "[PM] Inbound")]
-PIPE_CODE = {pid: i for i, (pid, _) in enumerate(PIPELINES)}
+# Order matters: index = tab on the page / pipeline code in the embedded data.
+# Subscribed (archived) and Review Customer hold cleaning customers too, so their chats
+# count under Cleaning CS (Nina, 2026-09-14).
+PIPELINES = [("[Cleaning] Tentram CS", [13334859,     # [Cleaning] Tentram CS
+                                        13409571,     # Subscribed (archived)
+                                        14280947]),   # Review Customer
+             ("[PM] Inbound",          [13498915])]
+PIPE_CODE = {pid: i for i, (_, pids) in enumerate(PIPELINES) for pid in pids}
 
 # First chat event on the account is March 2026 (verified 2026-09-14).
 HISTORY_FROM = datetime(2026, 3, 1, tzinfo=timezone.utc)
@@ -387,7 +391,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       mis. pesan terjadwal jam 08:00) diabaikan. Balasan tanpa nama pengirim yang bukan
       otomatis dihitung sebagai balasan CS dari HP — ditandai <b>HP / WhatsApp</b>.</li>
     <li><b>Pipeline</b> = pipeline tempat lead berada saat chat masuk (dari riwayat
-      perpindahan stage), jadi lead yang kemudian pindah pipeline tetap terhitung benar.</li>
+      perpindahan stage), jadi lead yang kemudian pindah pipeline tetap terhitung benar.
+      <b>[Cleaning] Tentram CS</b> juga mencakup chat dari pipeline <b>Subscribed</b> dan
+      <b>Review Customer</b>.</li>
     <li><b>Mingguan</b> = Senin–Minggu. <b>Belum dibalas</b> = customer masih menunggu saat
       halaman di-generate (__GENERATED__ WIB).</li>
     <li id="meta-line"></li>
@@ -610,7 +616,7 @@ def build_html(turns, names, users, meta):
         .replace("__NAMES__",     j({str(k): v for k, v in names.items()}))
         .replace("__USERS__",     j(user_names))
         .replace("__META__",      j(meta))
-        .replace("__PIPES__",     j([n for _, n in PIPELINES]))
+        .replace("__PIPES__",     j([n for n, _ in PIPELINES]))
         .replace("__SUBDOMAIN__", SUBDOMAIN)
         .replace("__WS__",        str(WORK_START))
         .replace("__WE__",        str(WORK_END))
@@ -651,7 +657,7 @@ def main():
     print("\nMeta:")
     for k, v in sorted(meta.items()):
         print(f"  {k:<20} {v}")
-    for code, (_, pname) in enumerate(PIPELINES):
+    for code, (pname, _) in enumerate(PIPELINES):
         ts = [t for t in turns if t[0] == code]
         print(f"  {pname:<22} {len(ts)} turns · "
               f"{sum(1 for t in ts if t[6] > HANG_LIMIT_MIN * 60)} waited > {HANG_LIMIT_MIN} min")
