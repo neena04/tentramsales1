@@ -25,7 +25,11 @@ jobs:
     # cs.html alone took 19 min locally (~450 Kommo calls, events endpoint is slow)
     timeout-minutes: 60
     steps:
+      # full history: the commit step rebuilds on top of whatever main looks like after
+      # the build, and pushing from a shallow clone can be rejected
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -50,13 +54,28 @@ jobs:
 
       - name: Commit and push if it changed
         run: |
-          # status, not diff: diff ignores a file that is not tracked yet
-          if [ -z "$(git status --porcelain -- sales.html cs.html)" ]; then
-            echo "sales.html and cs.html unchanged — nothing to commit"
-            exit 0
-          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sales.html cs.html
-          git commit -m "sales tables $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB"
-          git push
+          # The build takes minutes, and Nina's Mac pushes sales.html/index.html from its
+          # launchd jobs whenever it wakes up — run #36 (16 Sep) was rejected that way.
+          # So commit onto whatever main is NOW: reset --mixed keeps the freshly generated
+          # files in the working tree while moving HEAD to the latest remote commit, and
+          # only these two generated files are ever staged, so a concurrent push of
+          # index.html (or anything else) survives untouched.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --mixed FETCH_HEAD
+            git add sales.html cs.html
+            if git diff --cached --quiet; then
+              echo "sales.html and cs.html unchanged — nothing to commit"
+              exit 0
+            fi
+            git commit -m "sales tables $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "::warning::push rejected (someone else pushed first) — retry $attempt/3"
+            sleep 5
+          done
+          echo "::error::could not push after 3 attempts"
+          exit 1
