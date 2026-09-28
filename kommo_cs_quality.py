@@ -31,7 +31,9 @@ PIPE_CODE = {pid: i for i, (_, pids) in enumerate(PIPELINES) for pid in pids}
 # First chat event on the account is March 2026 (verified 2026-09-14).
 HISTORY_FROM = datetime(2026, 3, 1, tzinfo=timezone.utc)
 
-WORK_START, WORK_END = 9, 22                    # working hours, WIB (was 8; Nina, 2026-09-14)
+# Working hours, WIB, as [start, end) hour windows. Lunch 12–13 is off the clock.
+# History: 08–22 -> 09–22 (2026-09-14) -> 09–12 + 13–18 (Nina, 2026-09-28).
+WORK_WINDOWS = [(9, 12), (13, 18)]
 HANG_LIMIT_MIN       = 15                       # "customer left hanging" threshold
 
 # Outgoing messages with created_by = 0 are a mix of automation and CS replying from
@@ -130,9 +132,10 @@ def work_seconds(a, b):
     off = TZ_OFFSET * 3600
     total = 0
     for day in range((a + off) // 86400, (b + off) // 86400 + 1):
-        ws = day * 86400 - off + WORK_START * 3600
-        we = day * 86400 - off + WORK_END * 3600
-        total += max(0, min(b, we) - max(a, ws))
+        for h0, h1 in WORK_WINDOWS:
+            ws = day * 86400 - off + h0 * 3600
+            we = day * 86400 - off + h1 * 3600
+            total += max(0, min(b, we) - max(a, ws))
     return total
 
 
@@ -356,7 +359,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button data-v="daily">Harian</button><button data-v="weekly">Mingguan</button>
   </div>
   <div class="seg" id="seg-basis">
-    <button data-v="work">Jam kerja 09–22</button><button data-v="clock">Jam penuh</button>
+    <button data-v="work">Jam kerja 09–12, 13–18</button><button data-v="clock">Jam penuh</button>
   </div>
 </div>
 
@@ -375,7 +378,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="box red" id="flags">
   <h2>Customer menunggu lebih dari 15 menit</h2>
-  <div class="sub">Dihitung dalam jam kerja 09:00–22:00 WIB, semua jenis lead (baru / repeat,
+  <div class="sub">Dihitung dalam jam kerja 09:00–12:00 &amp; 13:00–18:00 WIB, semua jenis lead (baru / repeat,
     semua sumber, B2C / B2B). Tanggal = tanggal chat customer.</div>
   <div class="flagbar">
     <label for="flag-day">Tanggal</label><select id="flag-day"></select>
@@ -392,8 +395,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       CS membalas.</li>
     <li><b>First response</b> = giliran pertama di setiap lead. <b>Consecutive response</b> =
       semua giliran sesudahnya.</li>
-    <li><b>Jam kerja 09:00–22:00 WIB.</b> Hanya menit di dalam jam kerja yang dihitung —
-      chat jam 21:50 yang dibalas jam 09:10 = 20 menit. Chat yang masuk <i>dan</i> dibalas di luar
+    <li><b>Jam kerja 09:00–12:00 &amp; 13:00–18:00 WIB.</b> Hanya menit di dalam jam kerja yang dihitung —
+      chat jam 17:50 yang dibalas jam 09:10 = 20 menit; chat jam 11:55 yang dibalas jam 13:05 = 10 menit (istirahat 12:00–13:00 tidak dihitung). Chat yang masuk <i>dan</i> dibalas di luar
       jam kerja tidak masuk rata-rata pada mode ini. Mode <b>Jam penuh</b> memakai selisih jam
       biasa. Daftar &gt; 15 menit selalu memakai jam kerja.</li>
     <li><b>Pesan otomatis bukan balasan.</b> Auto-reply (terkirim ≤ 15 detik setelah pesan
@@ -418,7 +421,7 @@ const META = __META__;
 const PIPES = __PIPES__;
 const SUBDOMAIN = '__SUBDOMAIN__';
 const TODAY = '__TODAY__';
-const WS = __WS__, WE = __WE__, LIMIT = __LIMIT__ * 60, WIB = 7 * 3600;
+const WINDOWS = __WINDOWS__, LIMIT = __LIMIT__ * 60, WIB = 7 * 3600;
 </script>
 <script>
 (function(){
@@ -426,7 +429,7 @@ const MON = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','
 const HARI = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
 const dayOf = ts => new Date((ts + WIB) * 1000).toISOString().slice(0, 10);
 const hm    = ts => new Date((ts + WIB) * 1000).toISOString().slice(11, 16);
-const inHours = ts => { const h = new Date((ts + WIB) * 1000).getUTCHours(); return h >= WS && h < WE; };
+const inHours = ts => { const h = new Date((ts + WIB) * 1000).getUTCHours(); return WINDOWS.some(([a, b]) => h >= a && h < b); };
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const monday  = d => addDays(d, -((new Date(d + 'T00:00:00Z').getUTCDay() + 6) % 7));
 const dlabel  = d => +d.slice(8) + ' ' + MON[+d.slice(5, 7) - 1];
@@ -527,7 +530,7 @@ function renderTable(){
   document.getElementById('resp-title').textContent =
     'Waktu respons — ' + PIPES[S.pipe] + (S.mode === 'daily' ? ' · harian' : ' · mingguan');
   document.getElementById('resp-sub').innerHTML = S.basis === 'work'
-    ? 'Hanya menit di dalam jam kerja 09:00–22:00 WIB yang dihitung'
+    ? 'Hanya menit di dalam jam kerja 09:00–12:00 &amp; 13:00–18:00 WIB yang dihitung'
     : 'Selisih jam penuh, termasuk malam hari';
 
   const mst = stats(first, end), bad = mst.late + mst.open;
@@ -628,8 +631,7 @@ def build_html(turns, names, users, meta):
         .replace("__META__",      j(meta))
         .replace("__PIPES__",     j([n for n, _ in PIPELINES]))
         .replace("__SUBDOMAIN__", SUBDOMAIN)
-        .replace("__WS__",        str(WORK_START))
-        .replace("__WE__",        str(WORK_END))
+        .replace("__WINDOWS__",   json.dumps(WORK_WINDOWS))
         .replace("__LIMIT__",     str(HANG_LIMIT_MIN))
         .replace("__FROM__",      HISTORY_FROM.strftime("%-d %b %Y"))
         .replace("__TODAY__",     now_wib.strftime("%Y-%m-%d"))

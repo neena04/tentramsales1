@@ -29,11 +29,6 @@ ST_REPEAT         = 103437559   # deprecated, should always be empty (spec §8)
 ST_WON            = 142
 ST_LOST           = 143
 
-# Reaching any of these counts the lead as qualified (spec §5, "or beyond").
-# Changed 2026-09-09 at Nina's request: the bar moved from Service Suggestions & Quote
-# down to Customer Needs, so a lead counts as qualified once CS starts qualifying it
-# rather than only once a quote has gone out. Still a cohort, keyed on created date.
-QUALIFYING_STAGES = {ST_CUSTOMER_NEEDS, ST_QUOTE, ST_WORK_SCHEDULED, ST_REPEAT, ST_WON}
 
 # Custom field ids (verified against the live account 2026-09-08)
 CF_TANGGAL_PENGERJAAN = 3322834   # lead, date_time
@@ -44,6 +39,10 @@ CF_SUMBER_LEADS       = 3322396   # lead, select
 CF_BILLING_PERIOD     = 3444516   # lead, text
 CF_CUSTOMER_TYPE      = 3444080   # CONTACT, select: B2C / B2B
 CF_PHONE              = 3194444   # CONTACT, multitext "Telepon"
+# Qualified is set by CS by hand (Nina, 2026-09-28; fields added ~2026-09-18, so
+# there is no data before that). Toggle on = qualified, dated by "Qualified at".
+CF_QUALIFIED          = 3445601   # lead, checkbox "Qualified?"
+CF_QUALIFIED_AT       = 3445603   # lead, date     "Qualified at"
 
 # Monthly targets, per table and row. Fill these in as the team sets them.
 # Keys: "B2C" / "B2B"  ->  row key -> {"YYYY-MM": value}. Missing = shown as "—".
@@ -168,7 +167,7 @@ def fetch_unsorted():
 
 
 def fetch_events():
-    """lead_status_changed history — used for the qualified test (spec §5)."""
+    """lead_status_changed history — used to date won / lost leads (see entered_status)."""
     by_lead = defaultdict(list)
     page, total = 1, 0
     print("Fetching events", end="", flush=True)
@@ -276,7 +275,7 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
         "repeat_stage": 0,           # spec §7.5 / §8 — must be 0
         "won_no_date": 0,            # won but no usable date at all
         "won_date_from_fallback": 0, # won with no status event -> dated by Tanggal pengerjaan
-        "qualified_via_price": 0,    # lost leads that qualify only on the price proxy
+        "qual_no_date": 0,           # Qualified? on but Qualified at empty -> created date
         "no_contact": 0,
         "ctype_via_main": 0,
         "ctype_via_dup": 0,
@@ -323,23 +322,16 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
             dq["unknown_ctype"] += 1
         bucket = ctype or "Unknown"
 
-        # ── Qualified: stage timeline first, price proxy as fallback (spec §5) ──
-        visited = set()
-        evs = events_by_lead.get(lid) or []
-        for ev in evs:
-            before = (ev.get("value_before") or [{}])[0].get("lead_status", {}).get("id")
-            after  = (ev.get("value_after")  or [{}])[0].get("lead_status", {}).get("id")
-            if before:
-                visited.add(before)
-            if after:
-                visited.add(after)
-        visited.add(status_id)
+        # ── Qualified: the CS toggle, dated by Qualified at ──
+        qual_date = None
+        if cf_value(lead, CF_QUALIFIED):
+            qa = cf_value(lead, CF_QUALIFIED_AT)
+            qual_date = ts_to_date(int(qa)) if isinstance(qa, (int, float)) else None
+            if qual_date is None:
+                dq["qual_no_date"] += 1
+                qual_date = ts_to_date(created_at)
 
-        qual_timeline = bool(visited & QUALIFYING_STAGES)
-        qual_price    = status_id == ST_LOST and price > 0
-        qualified     = qual_timeline or qual_price
-        if qual_price and not qual_timeline:
-            dq["qualified_via_price"] += 1
+        evs = events_by_lead.get(lid) or []
 
         # ── Sales attribution — one lead, one date (spec §6) ──
         tanggal_raw = cf_value(lead, CF_TANGGAL_PENGERJAAN)
@@ -379,7 +371,7 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
             # is no reason to ship 3,866 customer names into a static HTML file
             "t":        bucket,                    # B2C / B2B / Unknown
             "cd":       ts_to_date(created_at),    # created date
-            "q":        1 if qualified else 0,
+            "qd":       qual_date,                 # Qualified at date, None if not qualified
             "ad":       attr_date,                 # sales attribution date
             "as":       attr_src,                  # "won" | "sched" — which §6 branch
             "sl":       cf_value(lead, CF_SUMBER_LEADS) or "(kosong)",
@@ -515,8 +507,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub">Lead yang kontak utamanya bertipe <b>B2C</b></div>
   <div class="scroller"><table id="t-B2C"></table></div>
   <div class="legend">
-    <span class="swatch"></span>Kolom abu-abu belum matang — lead baru masih diproses,
-    angka Qualified akan naik beberapa hari ke depan.
+    <b>Qualified</b> = toggle <i>Qualified?</i> aktif, dihitung pada tanggal <i>Qualified at</i>
+    (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
+    <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
+    <b>Qualified → Won %</b> = (Closed - Won + Work Scheduled) ÷ Qualified.
   </div>
 </div>
 
@@ -525,8 +519,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub">Lead yang kontak utamanya bertipe <b>B2B</b></div>
   <div class="scroller"><table id="t-B2B"></table></div>
   <div class="legend">
-    <span class="swatch"></span>Kolom abu-abu belum matang — lead baru masih diproses,
-    angka Qualified akan naik beberapa hari ke depan.
+    <b>Qualified</b> = toggle <i>Qualified?</i> aktif, dihitung pada tanggal <i>Qualified at</i>
+    (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
+    <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
+    <b>Qualified → Won %</b> = (Closed - Won + Work Scheduled) ÷ Qualified.
   </div>
 </div>
 
@@ -536,7 +532,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     belum bisa dimasukkan ke B2C maupun B2B</div>
   <div class="scroller"><table id="t-Unknown"></table></div>
   <div class="legend">
-    <span class="swatch"></span>Kolom abu-abu belum matang. Tabel ini seharusnya menyusut
+    Tabel ini seharusnya menyusut
     sampai kosong seiring Customer Type diisi — anggap saja progress bar backfill.
   </div>
 </div>
@@ -646,19 +642,6 @@ function buildColumns(ym){
   return cols;
 }
 
-// Spec §5: the most recent 7 date columns are immature and are greyed out.
-function immatureSet(cols){
-  const cutoff = new Date(TODAY + 'T00:00:00');
-  cutoff.setDate(cutoff.getDate() - 6);
-  const cutStr = cutoff.toISOString().slice(0,10);
-  const flags = cols.map(c => c.dates[c.dates.length-1] >= cutStr);
-  // never grey more than the 7 rightmost columns
-  let seen = 0;
-  for(let i=flags.length-1; i>=0; i--){
-    if(flags[i]){ seen++; if(seen > 7) flags[i] = false; }
-  }
-  return flags;
-}
 </script>
 </body>
 </html>
@@ -674,8 +657,8 @@ function metricsFor(bucket){
     if(l.t !== bucket) return;
     if(l.cd){                                   // Group A — created date
       m.inbound[l.cd] = (m.inbound[l.cd]||0) + 1;
-      if(l.q) m.qualified[l.cd] = (m.qualified[l.cd]||0) + 1;
     }
+    if(l.qd) m.qualified[l.qd] = (m.qualified[l.qd]||0) + 1;   // Qualified at date
     if(l.ad){                                   // Group B — attribution date (spec §6)
       m.won[l.ad]   = (m.won[l.ad]||0) + 1;
       m.sales[l.ad] = (m.sales[l.ad]||0) + l.p;
@@ -728,7 +711,7 @@ function renderTable(bucket, ym, cols, imm){
   let body = '<tbody>';
 
   // ── Group A — funnel, keyed on the lead's created date ──
-  body += `<tr class="grp"><td class="c-metric">Funnel — dasar: tanggal lead masuk</td>` +
+  body += `<tr class="grp"><td class="c-metric">Funnel — dasar: tanggal lead masuk / tanggal Qualified at</td>` +
           `<td colspan="${cols.length + 2}"></td></tr>`;
 
   body += '<tr><td class="c-metric">Inbound leads</td>' +
@@ -738,16 +721,16 @@ function renderTable(bucket, ym, cols, imm){
 
   body += '<tr><td class="c-metric">Qualified leads</td>' +
           `<td class="c-target">${target(bucket,'qualified',ym)}</td>` +
-          cells(ds => fmtInt(sumOver(m.qualified, ds)), '', true) +
+          cells(ds => fmtInt(sumOver(m.qualified, ds)), '', false) +
           `<td class="c-total">${fmtInt(sumOver(m.qualified, allDates))}</td></tr>`;
 
   const pct = ds => {
     const i = sumOver(m.inbound, ds), q = sumOver(m.qualified, ds);
     return i ? (q/i*100).toFixed(0) + '%' : '<span class="zero">—</span>';
   };
-  body += '<tr class="r-pct"><td class="c-metric">Qualified %</td>' +
+  body += '<tr class="r-pct"><td class="c-metric">Inbound → Qualified %</td>' +
           '<td class="c-target"><span class="zero">—</span></td>' +
-          cells(pct, '', true) +
+          cells(pct, '', false) +
           `<td class="c-total">${pct(allDates)}</td></tr>`;
 
   // ── Group B — sales, keyed on the closing / work date ──
@@ -778,6 +761,16 @@ function renderTable(bucket, ym, cols, imm){
   body += valueRow('Work Scheduled — Rp',       'schedV');
   body += countRow('TOTAL Leads Won', 'won',   'r-total', 'won');
   body += valueRow('TOTAL Sales',     'sales', 'r-total', 'sales');
+
+  // Closed - Won + Work Scheduled over Qualified leads, each on its own date basis.
+  const conv = ds => {
+    const q = sumOver(m.qualified, ds), w = sumOver(m.won, ds);
+    return q ? (w/q*100).toFixed(0) + '%' : '<span class="zero">—</span>';
+  };
+  body += '<tr class="r-pct"><td class="c-metric">Qualified → Won %</td>' +
+          '<td class="c-target"><span class="zero">—</span></td>' +
+          cells(conv, '', false) +
+          `<td class="c-total">${conv(allDates)}</td></tr>`;
 
   body += '<tr><td class="c-metric">Deals Lost</td>' +
           '<td class="c-target"><span class="zero">—</span></td>' +
@@ -972,7 +965,7 @@ function renderDQ(){
     [DQ.won_no_date,        'Lead <b>Closed - Won</b> tanpa tanggal apa pun — tidak masuk baris Sales', true],
     [DQ.won_date_from_fallback,'Lead <b>Closed - Won</b> tanpa riwayat perpindahan stage — tanggalnya diambil dari Tanggal pengerjaan (deal migrasi saat pipeline dibuat)', false],
     [DQ.ctype_conflict,     'Lead yang kontak duplikatnya <b>saling bertentangan</b> soal Customer type', true],
-    [DQ.qualified_via_price,'Lead <b>Closed - Lost</b> yang dihitung Qualified hanya lewat proxy Sales value &gt; 0', false],
+    [DQ.qual_no_date,       'Lead <b>Qualified?</b> aktif tapi <b>Qualified at</b> kosong — tanggalnya diambil dari tanggal lead masuk', true],
     [DQ.ctype_via_dup,      'Customer type terbaca dari <b>kontak duplikat</b>, bukan kontak utama (is_main kosong)', false],
     [DQ.ctype_via_phone,    'Customer type terbaca lewat <b>pencocokan nomor telepon</b> antar duplikat', false],
   ];
@@ -1052,7 +1045,7 @@ async function pollRun(){
 function render(){
   const ym = document.getElementById('month').value;
   const cols = buildColumns(ym);
-  const imm  = immatureSet(cols);
+  const imm  = cols.map(() => false);   // nothing matures since Qualified is dated by Qualified at
   renderTable('B2C', ym, cols, imm);
   renderTable('B2B', ym, cols, imm);
   renderTable('Unknown', ym, cols, imm);
