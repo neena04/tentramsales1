@@ -41,6 +41,7 @@ CF_NOMINAL_DISKON     = 3444300   # lead, numeric  (not used in these tables, sp
 CF_DEAL_TYPE          = 3390854   # lead, select
 CF_SERVICE            = 3340252   # lead, multiselect
 CF_SUMBER_LEADS       = 3322396   # lead, select
+CF_KODE_SUMBER        = 3445148   # lead, select — Meta campaign code (1A1, 2A2, …), since ~2026-09-18
 CF_BILLING_PERIOD     = 3444516   # lead, text
 CF_CUSTOMER_TYPE      = 3444080   # CONTACT, select: B2C / B2B
 CF_PHONE              = 3194444   # CONTACT, multitext "Telepon"
@@ -378,6 +379,7 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
             "ad":       dp_date,                   # Tanggal DP — sales attribution date
             "wd":       work_date,                 # Tanggal pengerjaan
             "sl":       cf_value(lead, CF_SUMBER_LEADS) or "(kosong)",
+            "ks":       cf_value(lead, CF_KODE_SUMBER),
             "p":        price,
             "ld":       lost_date,
             "lr":       lost_reason or "(tanpa alasan)",
@@ -561,6 +563,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <b>Lewat jadwal</b> = Tanggal pengerjaan sudah lewat — cek apakah di-reschedule, batal,
     atau lupa dipindah ke Won. Klik ID untuk membuka lead di Kommo</div>
   <div class="scroller"><table id="t-wsopen"></table></div>
+</div>
+
+<div class="box">
+  <h2>Meta Ads — Qualified per Kode Sumber Lead (mingguan)</h2>
+  <div class="sub">Lead dengan Sumber Leads = Meta Ads (atau yang punya Kode Sumber Lead),
+    semua tipe customer. Kolom = minggu lead masuk (Senin–Minggu); Qualified dihitung kapan pun
+    lead itu di-qualify, jadi angkanya tetap milik minggu lead masuk</div>
+  <div class="scroller"><table id="t-meta-q"></table></div>
+</div>
+
+<div class="box">
+  <h2>Meta Ads — Work Scheduled per Kode Sumber Lead (mingguan)</h2>
+  <div class="sub">Lead yang sama seperti tabel di atas. <b>Work Scheduled</b> = sudah bayar DP
+    (ada Tanggal DP), kapan pun DP-nya masuk, nilai = Sale</div>
+  <div class="scroller"><table id="t-meta-ws"></table></div>
+  <div class="legend"><span class="swatch"></span>Minggu abu-abu masih berjalan — ~90% DP masuk
+    dalam 7 hari sejak lead masuk, jadi angka minggu ini dan minggu lalu masih akan naik.
+    Kode Sumber Lead baru dipakai sejak ±18 Sep 2026; lead sebelumnya masuk <i>(tanpa kode)</i>.</div>
 </div>
 
 <div class="box amber">
@@ -983,6 +1003,81 @@ function renderWsWon(ym, cols){
   document.getElementById('t-wsopen').innerHTML = t + '</tbody>';
 }
 
+// ── Meta Ads by Kode Sumber Lead — weekly cohorts on created date ─────────────
+// Calendar weeks (Mon–Sun) overlapping the selected month. Each lead's outcome is
+// credited to the week it came in, whenever it qualified / paid the DP.
+function metaWeeks(ym){
+  const days = daysOfMonth(ym);
+  const d0 = new Date(days[0]+'T00:00:00Z');
+  d0.setUTCDate(d0.getUTCDate() - ((d0.getUTCDay()+6) % 7));        // back to Monday
+  const last = days[days.length-1], weeks = [];
+  const todayMon = new Date(TODAY+'T00:00:00Z');
+  todayMon.setUTCDate(todayMon.getUTCDate() - ((todayMon.getUTCDay()+6) % 7));
+  const cutoff = new Date(todayMon); cutoff.setUTCDate(cutoff.getUTCDate() - 7);  // this + last week
+  for(const w = new Date(d0); w.toISOString().slice(0,10) <= last; w.setUTCDate(w.getUTCDate()+7)){
+    if(w.toISOString().slice(0,10) > TODAY) break;
+    const dates = [];
+    for(let i=0;i<7;i++){ const x = new Date(w); x.setUTCDate(x.getUTCDate()+i); dates.push(x.toISOString().slice(0,10)); }
+    const a = new Date(dates[0]+'T00:00:00Z'), b = new Date(dates[6]+'T00:00:00Z');
+    const label = a.getUTCMonth() === b.getUTCMonth()
+      ? `${a.getUTCDate()}–${b.getUTCDate()} ${MONTHS_ID[b.getUTCMonth()]}`
+      : `${a.getUTCDate()} ${MONTHS_ID[a.getUTCMonth()]}–${b.getUTCDate()} ${MONTHS_ID[b.getUTCMonth()]}`;
+    weeks.push({label, dates, imm: w >= cutoff});
+  }
+  return weeks;
+}
+
+function renderMeta(ym){
+  const weeks = metaWeeks(ym);
+  const inW = new Set(weeks.flatMap(w => w.dates));
+  const NOCODE = '(tanpa kode)';
+  const g = {};                      // kode -> {n, q, ws, v}: {date -> x}
+  const add = (k, f, d, x) => { const o = g[k] || (g[k] = {n:{}, q:{}, ws:{}, v:{}}); o[f][d] = (o[f][d]||0) + x; };
+  LEADS.forEach(l => {
+    if(!l.cd || !inW.has(l.cd)) return;
+    if(l.sl !== 'Meta Ads' && !l.ks) return;
+    for(const k of [l.ks || NOCODE, '__all']){
+      add(k, 'n', l.cd, 1);
+      if(l.qd) add(k, 'q', l.cd, 1);
+      if(l.ad){ add(k, 'ws', l.cd, 1); add(k, 'v', l.cd, l.p); }
+    }
+  });
+  const codes = Object.keys(g).filter(k => k !== '__all' && k !== NOCODE).sort();
+  if(g[NOCODE]) codes.push(NOCODE);
+  const all = weeks.flatMap(w => w.dates);
+
+  let head = '<thead><tr><th class="c-metric">Kode Sumber Lead</th>';
+  weeks.forEach(w => { head += `<th class="c-day${w.imm ? ' immature' : ''}">${w.label}</th>`; });
+  head += '<th class="c-total">Total</th></tr></thead><tbody>';
+  const cell = (fn, cls) => weeks.map(w => `<td class="${cls||''}${w.imm ? ' immature' : ''}">${fn(w.dates)}</td>`).join('') +
+                            `<td class="c-total">${fn(all)}</td>`;
+  const pct = (o, a, b) => ds => { const x = sumOver(o[a], ds), y = sumOver(o[b], ds);
+                                    return y ? (x/y*100).toFixed(0) + '%' : '<span class="zero">—</span>'; };
+  const empty = `<tr><td class="c-metric">—</td><td colspan="${weeks.length+1}" style="text-align:left;color:#b2bec3">` +
+                'Belum ada lead Meta Ads di minggu-minggu ini</td></tr>';
+
+  const block = (k, rows) => {
+    const o = g[k], label = k === '__all' ? 'TOTAL Meta Ads' : k;
+    let h = `<tr class="grp"><td class="c-metric">${label}</td><td colspan="${weeks.length+1}"></td></tr>`;
+    rows.forEach(([name, fn, cls]) => {
+      h += `<tr class="${cls||''}"><td class="c-metric">${name}</td>${cell(fn(o))}</tr>`;
+    });
+    return h;
+  };
+  const int = f => o => ds => fmtInt(sumOver(o[f], ds));
+  const rp  = o => ds => { const v = sumOver(o.v, ds); return `<span title="${fmtRpFull(v)}">${fmtRp(v)}</span>`; };
+
+  const qRows  = [['Lead masuk', int('n')], ['Qualified', int('q')],
+                  ['Qualified %', o => pct(o,'q','n'), 'r-pct']];
+  const wsRows = [['Lead masuk', int('n')], ['Work Scheduled', int('ws')],
+                  ['Work Scheduled % (dari lead)', o => pct(o,'ws','n'), 'r-pct'],
+                  ['Work Scheduled % (dari Qualified)', o => pct(o,'ws','q'), 'r-pct'],
+                  ['Work Scheduled — Rp', rp, 'r-sales']];
+  const body = rows => g.__all ? codes.map(k => block(k, rows)).join('') + block('__all', rows) : empty;
+  document.getElementById('t-meta-q').innerHTML  = head + body(qRows)  + '</tbody>';
+  document.getElementById('t-meta-ws').innerHTML = head + body(wsRows) + '</tbody>';
+}
+
 // ── The CS to-do list: which leads still need a Customer Type ─────────────────
 function renderTodo(ym, cols){
   const dates = new Set(cols.flatMap(c => c.dates));
@@ -1141,6 +1236,7 @@ function render(){
   renderRecon(ym, cols, imm);
   renderSource(ym, cols);
   renderWsWon(ym, cols);
+  renderMeta(ym);
   renderTodo(ym, cols);
   const ageDays = Math.floor((Date.now() - new Date(GENERATED_AT + 'T00:00:00').getTime())/864e5);
   const badge = document.getElementById('stale-badge');
