@@ -552,6 +552,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="box amber">
+  <h2>Daftar lead tanpa Customer Type — untuk diisi CS</h2>
+  <div class="sub">Lead dari Tabel 3, dikelompokkan per tanggal masuk. Klik nomornya untuk
+    langsung membuka lead di Kommo, lalu isi Customer Type di kontak utamanya</div>
+  <div class="scroller"><table id="t-todo"></table></div>
+  <div class="legend" id="todo-foot"></div>
+</div>
+
 <div class="box">
   <h2>Work Scheduled → Closed - Won</h2>
   <div class="sub">Semua tipe customer. Dari lead yang bayar DP (per Tanggal DP), berapa
@@ -586,14 +594,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="legend"><span class="swatch"></span>Minggu abu-abu masih berjalan — ~90% DP masuk
     dalam 7 hari sejak lead masuk, jadi angka minggu ini dan minggu lalu masih akan naik.
     Kode Sumber Lead baru dipakai sejak ±18 Sep 2026; lead sebelumnya masuk <i>(tanpa kode)</i>.</div>
-</div>
-
-<div class="box amber">
-  <h2>Daftar lead tanpa Customer Type — untuk diisi CS</h2>
-  <div class="sub">Lead dari Tabel 3, dikelompokkan per tanggal masuk. Klik nomornya untuk
-    langsung membuka lead di Kommo, lalu isi Customer Type di kontak utamanya</div>
-  <div class="scroller"><table id="t-todo"></table></div>
-  <div class="legend" id="todo-foot"></div>
 </div>
 
 <div class="box">
