@@ -28,10 +28,15 @@ ST_WORK_SCHEDULED = 103507939
 ST_REPEAT         = 103437559   # deprecated, should always be empty (spec §8)
 ST_WON            = 142
 ST_LOST           = 143
+STAGE_LABELS = {ST_INCOMING: "Incoming leads", ST_INCOMING_ASGN: "Incoming (ASSIGNED)",
+                ST_CUSTOMER_NEEDS: "Customer Needs", ST_QUOTE: "Quote",
+                ST_WORK_SCHEDULED: "Work Scheduled", ST_REPEAT: "Repeat customer",
+                ST_WON: "Closed - Won", ST_LOST: "Closed - Lost"}
 
 
 # Custom field ids (verified against the live account 2026-09-08)
 CF_TANGGAL_PENGERJAAN = 3322834   # lead, date_time
+CF_TANGGAL_DP         = 3439006   # lead, date — Work Scheduled is dated by this (2026-09-30)
 CF_NOMINAL_DISKON     = 3444300   # lead, numeric  (not used in these tables, spec §6)
 CF_DEAL_TYPE          = 3390854   # lead, select
 CF_SERVICE            = 3340252   # lead, multiselect
@@ -271,10 +276,11 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
     dq = {
         "unknown_ctype": 0,          # spec §7.1
         "won_zero_value": 0,         # spec §7.2
-        "sched_no_date": 0,          # spec §7.3
+        "sched_no_dp": 0,            # in Work Scheduled now but no Tanggal DP
+        "dp_zero_value": 0,          # Tanggal DP set but Sales = 0
         "repeat_stage": 0,           # spec §7.5 / §8 — must be 0
-        "won_no_date": 0,            # won but no usable date at all
-        "won_date_from_fallback": 0, # won with no status event -> dated by Tanggal pengerjaan
+        "won_no_dp": 0,              # Closed - Won without Tanggal DP -> not in Sales rows
+        "ws_no_dp": 0,               # ever reached Work Scheduled but no Tanggal DP
         "qual_no_date": 0,           # Qualified? on but Qualified at empty -> created date
         "no_contact": 0,
         "ctype_via_main": 0,
@@ -333,29 +339,26 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
 
         evs = events_by_lead.get(lid) or []
 
-        # ── Sales attribution — one lead, one date (spec §6) ──
-        tanggal_raw = cf_value(lead, CF_TANGGAL_PENGERJAAN)
-        tanggal_ts  = int(tanggal_raw) if isinstance(tanggal_raw, (int, float)) else None
-        attr_date   = None
-        attr_src    = None
+        # ── Sales: Work Scheduled, dated by Tanggal DP (Nina, 2026-09-30) ──
+        # A lead counts once the DP is in, on the DP date, valued at Sales — whatever
+        # stage it is in now (Won, still scheduled, or cancelled after paying the DP).
+        # This shows the sales secured each day; the WS → Won table tracks what then
+        # actually got done.
+        dp_raw  = cf_value(lead, CF_TANGGAL_DP)
+        dp_date = ts_to_date(int(dp_raw)) if isinstance(dp_raw, (int, float)) else None
+        tg_raw  = cf_value(lead, CF_TANGGAL_PENGERJAAN)
+        work_date = ts_to_date(int(tg_raw)) if isinstance(tg_raw, (int, float)) else None
+        if dp_date and price == 0:
+            dq["dp_zero_value"] += 1
         if status_id == ST_WON:
-            # real won date -> scheduled work date -> closed_at (see entered_status)
-            won_ts = entered_status(evs, ST_WON)
-            if won_ts is None:
-                won_ts = tanggal_ts or closed_at
-                dq["won_date_from_fallback"] += 1
-            attr_date = ts_to_date(won_ts)
-            attr_src  = "won"
-            if attr_date is None:
-                dq["won_no_date"] += 1
             if price == 0:
                 dq["won_zero_value"] += 1
-        elif status_id == ST_WORK_SCHEDULED:
-            attr_date = ts_to_date(tanggal_ts)
-            attr_src  = "sched"
-            if attr_date is None:
-                dq["sched_no_date"] += 1
-        # every other stage: not counted — the elif is load-bearing (spec §6)
+            if not dp_date:
+                dq["won_no_dp"] += 1
+        elif status_id == ST_WORK_SCHEDULED and not dp_date:
+            dq["sched_no_dp"] += 1
+        if not dp_date and entered_status(evs, ST_WORK_SCHEDULED):
+            dq["ws_no_dp"] += 1
 
         if status_id == ST_REPEAT:
             dq["repeat_stage"] += 1
@@ -372,8 +375,8 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
             "t":        bucket,                    # B2C / B2B / Unknown
             "cd":       ts_to_date(created_at),    # created date
             "qd":       qual_date,                 # Qualified at date, None if not qualified
-            "ad":       attr_date,                 # sales attribution date
-            "as":       attr_src,                  # "won" | "sched" — which §6 branch
+            "ad":       dp_date,                   # Tanggal DP — sales attribution date
+            "wd":       work_date,                 # Tanggal pengerjaan
             "sl":       cf_value(lead, CF_SUMBER_LEADS) or "(kosong)",
             "p":        price,
             "ld":       lost_date,
@@ -460,6 +463,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-radius:4px;padding:1px 7px;margin:0 3px 3px 0;font-variant-numeric:tabular-nums}
   #t-todo .c-ids a:hover{background:#6c5ce7;color:#fff}
   #t-todo .c-metric{min-width:110px}
+  #t-wsopen td,#t-wsopen th{text-align:left}
+  #t-wsopen td.num,#t-wsopen th.num{text-align:right}
+  #t-wsopen a{color:#6c5ce7;font-variant-numeric:tabular-nums}
+  #t-wsw .c-metric{min-width:220px}
   #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
@@ -510,7 +517,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <b>Qualified</b> = toggle <i>Qualified?</i> aktif, dihitung pada tanggal <i>Qualified at</i>
     (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
     <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
-    <b>Qualified → Won %</b> = (Closed - Won + Work Scheduled) ÷ Qualified.
+    <b>Work Scheduled</b> = lead yang sudah bayar DP, dihitung pada <i>Tanggal DP</i> dengan nilai
+    <i>Sale</i> — apa pun stage-nya sekarang.
+    <b>Qualified → Work Scheduled %</b> = Work Scheduled ÷ Qualified.
   </div>
 </div>
 
@@ -522,7 +531,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <b>Qualified</b> = toggle <i>Qualified?</i> aktif, dihitung pada tanggal <i>Qualified at</i>
     (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
     <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
-    <b>Qualified → Won %</b> = (Closed - Won + Work Scheduled) ÷ Qualified.
+    <b>Work Scheduled</b> = lead yang sudah bayar DP, dihitung pada <i>Tanggal DP</i> dengan nilai
+    <i>Sale</i> — apa pun stage-nya sekarang.
+    <b>Qualified → Work Scheduled %</b> = Work Scheduled ÷ Qualified.
   </div>
 </div>
 
@@ -535,6 +546,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     Tabel ini seharusnya menyusut
     sampai kosong seiring Customer Type diisi — anggap saja progress bar backfill.
   </div>
+</div>
+
+<div class="box">
+  <h2>Work Scheduled → Closed - Won</h2>
+  <div class="sub">Semua tipe customer. Dari lead yang bayar DP (per Tanggal DP), berapa
+    yang sudah dipindah ke <b>Closed - Won</b> — dan sisanya kenapa belum</div>
+  <div class="scroller"><table id="t-wsw"></table></div>
+</div>
+
+<div class="box">
+  <h2>Work Scheduled yang belum Closed - Won</h2>
+  <div class="sub">Lead dengan Tanggal DP di bulan ini yang stage-nya belum Closed - Won.
+    <b>Lewat jadwal</b> = Tanggal pengerjaan sudah lewat — cek apakah di-reschedule, batal,
+    atau lupa dipindah ke Won. Klik ID untuk membuka lead di Kommo</div>
+  <div class="scroller"><table id="t-wsopen"></table></div>
 </div>
 
 <div class="box amber">
@@ -556,18 +582,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="box">
   <h2>Sumber Leads — per hari</h2>
-  <div class="sub">Deal yang menang (Closed - Won + Work Scheduled), semua tipe customer
-    digabung. Dasar tanggal sama dengan baris Sales di atas, jadi baris TOTAL di sini =
+  <div class="sub">Lead Work Scheduled (sudah bayar DP), semua tipe customer digabung.
+    Dasar tanggal sama dengan baris Sales di atas (Tanggal DP), jadi baris TOTAL di sini =
     Tabel 1 + Tabel 2 + Tabel 3</div>
   <div class="scroller"><table id="t-source"></table></div>
 </div>
 
 <div class="note">
   <b>Ketiga tabel memang tidak bisa dijumlahkan ke bawah.</b>
-  Baris Funnel dihitung dari tanggal lead masuk; baris Sales dihitung dari tanggal closing
-  atau tanggal pengerjaan. Keduanya menggambarkan kumpulan lead yang berbeda, jadi
-  "Leads Won ÷ Inbound leads" pada tanggal yang sama bukan conversion rate dan sengaja
-  tidak ditampilkan.
+  Inbound dihitung dari tanggal lead masuk, Qualified dari Qualified at, dan Work Scheduled
+  dari Tanggal DP. Masing-masing menggambarkan kumpulan lead yang berbeda, jadi persentase
+  per hari adalah perbandingan volume, bukan cohort yang sama.
 </div>
 
 <div class="box">
@@ -583,6 +608,7 @@ const REQUESTS = __REQUESTS__;
 const TARGETS = __TARGETS__;
 const TODAY = "__TODAY__";
 const SUBDOMAIN = "__SUBDOMAIN__";
+const STAGES = __STAGES__;
 const GENERATED_AT = "__GENERATED_DATE__";
 const MONTHS_ID = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 
@@ -651,21 +677,16 @@ function buildColumns(ym){
 JS_RENDER = r"""
 // ── Aggregation ───────────────────────────────────────────────────────────────
 function metricsFor(bucket){
-  const m = {inbound:{}, qualified:{}, won:{}, sales:{}, lost:{}, reasons:{},
-             wonC:{}, wonV:{}, schedC:{}, schedV:{}};
+  const m = {inbound:{}, qualified:{}, won:{}, sales:{}, lost:{}, reasons:{}};
   LEADS.forEach(l => {
     if(l.t !== bucket) return;
     if(l.cd){                                   // Group A — created date
       m.inbound[l.cd] = (m.inbound[l.cd]||0) + 1;
     }
     if(l.qd) m.qualified[l.qd] = (m.qualified[l.qd]||0) + 1;   // Qualified at date
-    if(l.ad){                                   // Group B — attribution date (spec §6)
+    if(l.ad){                                   // Group B — Work Scheduled, by Tanggal DP
       m.won[l.ad]   = (m.won[l.ad]||0) + 1;
       m.sales[l.ad] = (m.sales[l.ad]||0) + l.p;
-      const c = l.as === 'won' ? 'wonC' : 'schedC';
-      const v = l.as === 'won' ? 'wonV' : 'schedV';
-      m[c][l.ad] = (m[c][l.ad]||0) + 1;
-      m[v][l.ad] = (m[v][l.ad]||0) + l.p;
     }
     if(l.ld){                                   // Closed - Lost, by closed_at
       m.lost[l.ld] = (m.lost[l.ld]||0) + 1;
@@ -734,11 +755,9 @@ function renderTable(bucket, ym, cols, imm){
           `<td class="c-total">${pct(allDates)}</td></tr>`;
 
   // ── Group B — sales, keyed on the closing / work date ──
-  body += `<tr class="grp"><td class="c-metric">Sales — dasar: tanggal closing / pengerjaan</td>` +
+  body += `<tr class="grp"><td class="c-metric">Sales — dasar: Tanggal DP</td>` +
           `<td colspan="${cols.length + 2}"></td></tr>`;
 
-  // Split by which branch of the §6 rule attributed the lead, so each half can be
-  // checked against its own Kommo stage. A lead still appears in exactly one of them.
   const countRow = (label, key, cls, tgt) =>
     `<tr class="${cls||''}"><td class="c-metric">${label}</td>` +
     `<td class="c-target">${tgt ? target(bucket,tgt,ym) : '<span class="zero">—</span>'}</td>` +
@@ -755,19 +774,15 @@ function renderTable(bucket, ym, cols, imm){
     `<td class="c-total" title="${fmtRpFull(sumOver(m[key], allDates))}">` +
     `${fmtRp(sumOver(m[key], allDates))}</td></tr>`;
 
-  body += countRow('Closed - Won', 'wonC');
-  body += valueRow('Closed - Won — Rp',       'wonV');
-  body += countRow('Work Scheduled', 'schedC');
-  body += valueRow('Work Scheduled — Rp',       'schedV');
-  body += countRow('TOTAL Leads Won', 'won',   'r-total', 'won');
-  body += valueRow('TOTAL Sales',     'sales', 'r-total', 'sales');
+  body += countRow('Work Scheduled', 'won',   'r-total', 'won');
+  body += valueRow('Work Scheduled — Rp', 'sales', 'r-total', 'sales');
 
-  // Closed - Won + Work Scheduled over Qualified leads, each on its own date basis.
+  // Work Scheduled (by Tanggal DP) over Qualified leads (by Qualified at).
   const conv = ds => {
     const q = sumOver(m.qualified, ds), w = sumOver(m.won, ds);
     return q ? (w/q*100).toFixed(0) + '%' : '<span class="zero">—</span>';
   };
-  body += '<tr class="r-pct"><td class="c-metric">Qualified → Won %</td>' +
+  body += '<tr class="r-pct"><td class="c-metric">Qualified → Work Scheduled %</td>' +
           '<td class="c-target"><span class="zero">—</span></td>' +
           cells(conv, '', false) +
           `<td class="c-total">${conv(allDates)}</td></tr>`;
@@ -895,6 +910,79 @@ function renderSource(ym, cols){
   document.getElementById('t-source').innerHTML = head + body + '</tbody>';
 }
 
+// ── Work Scheduled -> Closed - Won, dated by Tanggal DP ─────────────────────────
+// Why a DP lead is not Won yet. Order matters: first match wins.
+function wsState(l){
+  if(l.s === 142) return 'won';
+  if(l.s === 143) return 'lost';
+  if(l.s !== 103507939) return 'back';                  // moved back to an earlier stage
+  if(!l.wd) return 'nodate';
+  return l.wd < TODAY ? 'overdue' : 'due';
+}
+const WS_LABEL = {lost:'Batal (Closed - Lost)', back:'Mundur ke stage lain',
+                  nodate:'Tanggal pengerjaan kosong', overdue:'Lewat jadwal', due:'Belum jadwal'};
+
+function renderWsWon(ym, cols){
+  const allDates = cols.flatMap(c => c.dates);
+  const by = {all:{}, won:{}, lost:{}, back:{}, nodate:{}, overdue:{}, due:{}};
+  LEADS.forEach(l => {
+    if(!l.ad) return;
+    by.all[l.ad] = (by.all[l.ad]||0) + 1;
+    const k = wsState(l);
+    by[k][l.ad] = (by[k][l.ad]||0) + 1;
+  });
+
+  let h = '<thead><tr><th class="c-metric">Metrik</th>';
+  cols.forEach(c => { h += `<th class="c-day">${c.label}</th>`; });
+  h += '<th class="c-total">Total</th></tr></thead><tbody>';
+  const row = (label, key, cls) =>
+    `<tr class="${cls||''}"><td class="c-metric">${label}</td>` +
+    cols.map(c => `<td>${fmtInt(sumOver(by[key], c.dates))}</td>`).join('') +
+    `<td class="c-total">${fmtInt(sumOver(by[key], allDates))}</td></tr>`;
+  const pct = ds => {
+    const a = sumOver(by.all, ds), w = sumOver(by.won, ds);
+    return a ? (w/a*100).toFixed(0) + '%' : '<span class="zero">—</span>';
+  };
+  h += row('Work Scheduled (DP masuk)', 'all', 'r-total');
+  h += row('Sudah Closed - Won', 'won');
+  h += '<tr class="r-pct r-total"><td class="c-metric">% sudah Closed - Won</td>' +
+       cols.map(c => `<td>${pct(c.dates)}</td>`).join('') +
+       `<td class="c-total">${pct(allDates)}</td></tr>`;
+  h += `<tr class="grp"><td class="c-metric">Belum Closed - Won</td>` +
+       `<td colspan="${cols.length + 1}"></td></tr>`;
+  ['due','overdue','nodate','back','lost'].forEach(k => { h += row(WS_LABEL[k], k); });
+  document.getElementById('t-wsw').innerHTML = h + '</tbody>';
+
+  // the list — overdue first, then everything else by work date
+  const dates = new Set(allDates);
+  const rank = {overdue:0, nodate:1, back:2, lost:3, due:4};
+  const open = LEADS.filter(l => l.ad && dates.has(l.ad) && wsState(l) !== 'won')
+    .sort((a,b) => (rank[wsState(a)] - rank[wsState(b)]) ||
+                   String(a.wd||'').localeCompare(String(b.wd||'')));
+  let t = '<thead><tr><th>Lead</th><th>Tipe</th><th>Tanggal DP</th><th>Tanggal pengerjaan</th>' +
+          '<th>Stage sekarang</th><th class="num">Sale</th><th>Keterangan</th></tr></thead><tbody>';
+  if(!open.length){
+    t += '<tr><td colspan="7" style="color:#00b894">Semua lead Work Scheduled bulan ini sudah Closed - Won</td></tr>';
+  }
+  open.forEach(l => {
+    const k = wsState(l);
+    let note = WS_LABEL[k];
+    if(k === 'overdue'){
+      const n = Math.round((new Date(TODAY+'T00:00:00') - new Date(l.wd+'T00:00:00')) / 864e5);
+      note = `<span class="warnnum">Lewat jadwal ${n} hari</span> — reschedule / batal / belum dipindah ke Won?`;
+    } else if(k === 'due'){
+      note = l.wd === TODAY ? 'Dikerjakan hari ini' : 'Belum jadwal';
+    } else if(k === 'nodate' || k === 'back'){
+      note = `<span class="warnnum">${note}</span>`;
+    }
+    t += `<tr><td><a href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" rel="noopener">${l.id}</a></td>` +
+         `<td>${l.t}</td><td>${dayLabel(l.ad)}</td><td>${l.wd ? dayLabel(l.wd) : '—'}</td>` +
+         `<td>${STAGES[l.s] || l.s}</td><td class="num" title="${fmtRpFull(l.p)}">${fmtRp(l.p)}</td>` +
+         `<td>${note}</td></tr>`;
+  });
+  document.getElementById('t-wsopen').innerHTML = t + '</tbody>';
+}
+
 // ── The CS to-do list: which leads still need a Customer Type ─────────────────
 function renderTodo(ym, cols){
   const dates = new Set(cols.flatMap(c => c.dates));
@@ -960,10 +1048,11 @@ function renderDQ(){
   const items = [
     [DQ.unknown_ctype,      'Lead dengan <b>Customer type kosong</b> — tidak masuk tabel B2C maupun B2B', true],
     [DQ.won_zero_value,     'Lead <b>Closed - Won</b> dengan Sales value = 0', true],
-    [DQ.sched_no_date,      'Lead <b>Work Scheduled</b> tanpa Tanggal pengerjaan — hilang dari baris Sales', true],
+    [DQ.sched_no_dp,        'Lead di stage <b>Work Scheduled</b> tanpa Tanggal DP — hilang dari baris Sales', true],
+    [DQ.ws_no_dp,           'Lead yang pernah masuk <b>Work Scheduled</b> tapi Tanggal DP kosong — tidak dihitung', true],
+    [DQ.dp_zero_value,      'Lead dengan <b>Tanggal DP</b> tapi Sale = 0', true],
     [DQ.repeat_stage,       'Lead di stage <b>Repeat customer</b> — stage sudah tidak dipakai, harus selalu 0', true],
-    [DQ.won_no_date,        'Lead <b>Closed - Won</b> tanpa tanggal apa pun — tidak masuk baris Sales', true],
-    [DQ.won_date_from_fallback,'Lead <b>Closed - Won</b> tanpa riwayat perpindahan stage — tanggalnya diambil dari Tanggal pengerjaan (deal migrasi saat pipeline dibuat)', false],
+    [DQ.won_no_dp,          'Lead <b>Closed - Won</b> tanpa Tanggal DP — tidak masuk baris Sales', true],
     [DQ.ctype_conflict,     'Lead yang kontak duplikatnya <b>saling bertentangan</b> soal Customer type', true],
     [DQ.qual_no_date,       'Lead <b>Qualified?</b> aktif tapi <b>Qualified at</b> kosong — tanggalnya diambil dari tanggal lead masuk', true],
     [DQ.ctype_via_dup,      'Customer type terbaca dari <b>kontak duplikat</b>, bukan kontak utama (is_main kosong)', false],
@@ -1051,6 +1140,7 @@ function render(){
   renderTable('Unknown', ym, cols, imm);
   renderRecon(ym, cols, imm);
   renderSource(ym, cols);
+  renderWsWon(ym, cols);
   renderTodo(ym, cols);
   const ageDays = Math.floor((Date.now() - new Date(GENERATED_AT + 'T00:00:00').getTime())/864e5);
   const badge = document.getElementById('stale-badge');
@@ -1094,6 +1184,7 @@ def build_html(dataset, dq, unsorted=None):
         .replace("__REQUESTS__",  json.dumps(unsorted or {}))
         .replace("__TARGETS__",   json.dumps(TARGETS))
         .replace("__SUBDOMAIN__", SUBDOMAIN)
+        .replace("__STAGES__",    json.dumps(STAGE_LABELS))
         .replace("__TODAY__",     (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED_DATE__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
         .replace("__GENERATED__", (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d %H:%M")))
