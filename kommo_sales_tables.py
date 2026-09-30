@@ -469,6 +469,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #t-wsopen td.num,#t-wsopen th.num{text-align:right}
   #t-wsopen a{color:#6c5ce7;font-variant-numeric:tabular-nums}
   #t-wsw .c-metric{min-width:220px}
+  #t-meta-month td,#t-meta-month th{min-width:96px}
+  #t-meta-month .step{color:#8a8f98;font-weight:400;font-size:11px}
   #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
@@ -563,6 +565,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <b>Lewat jadwal</b> = Tanggal pengerjaan sudah lewat — cek apakah di-reschedule, batal,
     atau lupa dipindah ke Won. Klik ID untuk membuka lead di Kommo</div>
   <div class="scroller"><table id="t-wsopen"></table></div>
+</div>
+
+<div class="box">
+  <h2 id="meta-month-title">Meta Ads — funnel bulanan per Kode Sumber Lead</h2>
+  <div class="sub">Lead Meta Ads yang <b>masuk</b> di bulan ini (tanggal 1 sampai akhir bulan),
+    semua tipe customer. Qualified dan Work Scheduled dihitung kapan pun terjadinya — termasuk
+    sesudah bulan ini berakhir — selama lead-nya masuk di bulan ini</div>
+  <div class="scroller"><table id="t-meta-month"></table></div>
+  <div class="legend" id="meta-month-foot"></div>
 </div>
 
 <div class="box">
@@ -1072,6 +1083,57 @@ function renderMeta(ym){
   document.getElementById('t-meta').innerHTML = head + body + '</tbody>';
 }
 
+// ── Meta Ads, one month's created leads as a funnel ───────────────────────────
+function renderMetaMonth(ym){
+  const NOCODE = '(tanpa kode)';
+  const g = {};
+  LEADS.forEach(l => {
+    if(!l.cd || l.cd.slice(0,7) !== ym) return;
+    if(l.sl !== 'Meta Ads' && !l.ks) return;
+    for(const k of [l.ks || NOCODE, '__all']){
+      const o = g[k] || (g[k] = {n:0, q:0, ws:0, v:0});
+      o.n++;
+      if(l.qd) o.q++;
+      if(l.ad){ o.ws++; o.v += l.p; }
+    }
+  });
+  const codes = Object.keys(g).filter(k => k !== '__all' && k !== NOCODE).sort();
+  if(g[NOCODE]) codes.push(NOCODE);
+  const pct = (a, b) => b ? (a/b*100).toFixed(0) + '%' : '—';
+
+  let h = '<thead><tr><th class="c-metric">Kode Sumber Lead</th><th>Lead masuk</th>' +
+          '<th>Qualified</th><th>% dari lead</th><th>Work Scheduled</th>' +
+          '<th>% dari Qualified</th><th>% dari lead</th><th>Work Scheduled — Rp</th></tr></thead><tbody>';
+  const line = (label, o, cls) =>
+    `<tr class="${cls||''}"><td class="c-metric">${label}</td><td>${fmtInt(o.n)}</td>` +
+    `<td>${fmtInt(o.q)}</td><td class="step">${pct(o.q, o.n)}</td>` +
+    `<td>${fmtInt(o.ws)}</td><td class="step">${pct(o.ws, o.q)}</td><td class="step">${pct(o.ws, o.n)}</td>` +
+    `<td title="${fmtRpFull(o.v)}">${fmtRp(o.v)}</td></tr>`;
+  if(!g.__all){
+    h += '<tr><td class="c-metric">—</td><td colspan="7" style="text-align:left;color:#b2bec3">' +
+         'Belum ada lead Meta Ads yang masuk di bulan ini</td></tr>';
+  } else {
+    codes.forEach(k => { h += line(k, g[k]); });
+    h += line('TOTAL Meta Ads', g.__all, 'r-total');
+  }
+  document.getElementById('t-meta-month').innerHTML = h + '</tbody>';
+
+  const [y, m] = ym.split('-').map(Number);
+  document.getElementById('meta-month-title').textContent =
+    `Meta Ads — funnel bulanan per Kode Sumber Lead · lead masuk ${MONTHS_ID[m-1]} ${y}`;
+  // days since the month ended; ~93% of DPs land within 14 days of the lead coming in
+  const end = new Date(Date.UTC(y, m, 0)), today = new Date(TODAY+'T00:00:00Z');
+  const age = Math.round((today - end) / 864e5);
+  document.getElementById('meta-month-foot').innerHTML =
+    `Posisi per ${dayLabel(TODAY)} ${TODAY.slice(0,4)}. ` +
+    (age < 14
+      ? `<span class="warnnum">Angka masih berjalan</span> — lead yang masuk di akhir bulan masih bisa bayar DP ` +
+        `(±93% DP masuk dalam 14 hari), jadi Work Scheduled masih akan naik sampai sekitar ` +
+        `${dayLabel(new Date(end.getTime() + 14*864e5).toISOString().slice(0,10))}.`
+      : 'Bulan ini sudah lewat 14 hari — angkanya praktis final.') +
+    ' Kode Sumber Lead baru dipakai sejak ±18 Sep 2026.';
+}
+
 // ── The CS to-do list: which leads still need a Customer Type ─────────────────
 function renderTodo(ym, cols){
   const dates = new Set(cols.flatMap(c => c.dates));
@@ -1230,6 +1292,7 @@ function render(){
   renderRecon(ym, cols, imm);
   renderSource(ym, cols);
   renderWsWon(ym, cols);
+  renderMetaMonth(ym);
   renderMeta(ym);
   renderTodo(ym, cols);
   const ageDays = Math.floor((Date.now() - new Date(GENERATED_AT + 'T00:00:00').getTime())/864e5);
