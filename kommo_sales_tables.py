@@ -566,18 +566,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div class="box">
-  <h2>Meta Ads — Qualified per Kode Sumber Lead (mingguan)</h2>
+  <h2>Meta Ads — funnel per Kode Sumber Lead (mingguan)</h2>
   <div class="sub">Lead dengan Sumber Leads = Meta Ads (atau yang punya Kode Sumber Lead),
-    semua tipe customer. Kolom = minggu lead masuk (Senin–Minggu); Qualified dihitung kapan pun
-    lead itu di-qualify, jadi angkanya tetap milik minggu lead masuk</div>
-  <div class="scroller"><table id="t-meta-q"></table></div>
-</div>
-
-<div class="box">
-  <h2>Meta Ads — Work Scheduled per Kode Sumber Lead (mingguan)</h2>
-  <div class="sub">Lead yang sama seperti tabel di atas. <b>Work Scheduled</b> = sudah bayar DP
-    (ada Tanggal DP), kapan pun DP-nya masuk, nilai = Sale</div>
-  <div class="scroller"><table id="t-meta-ws"></table></div>
+    semua tipe customer. Kolom = minggu lead masuk (Senin–Minggu). Qualified dan
+    <b>Work Scheduled</b> (sudah bayar DP, nilai = Sale) dihitung kapan pun terjadinya, tapi
+    tetap dicatat di minggu lead itu masuk</div>
+  <div class="scroller"><table id="t-meta"></table></div>
   <div class="legend"><span class="swatch"></span>Minggu abu-abu masih berjalan — ~90% DP masuk
     dalam 7 hari sejak lead masuk, jadi angka minggu ini dan minggu lalu masih akan naik.
     Kode Sumber Lead baru dipakai sejak ±18 Sep 2026; lead sebelumnya masuk <i>(tanpa kode)</i>.</div>
@@ -1067,15 +1061,15 @@ function renderMeta(ym){
   const int = f => o => ds => fmtInt(sumOver(o[f], ds));
   const rp  = o => ds => { const v = sumOver(o.v, ds); return `<span title="${fmtRpFull(v)}">${fmtRp(v)}</span>`; };
 
-  const qRows  = [['Lead masuk', int('n')], ['Qualified', int('q')],
-                  ['Qualified %', o => pct(o,'q','n'), 'r-pct']];
-  const wsRows = [['Lead masuk', int('n')], ['Work Scheduled', int('ws')],
-                  ['Work Scheduled % (dari lead)', o => pct(o,'ws','n'), 'r-pct'],
-                  ['Work Scheduled % (dari Qualified)', o => pct(o,'ws','q'), 'r-pct'],
-                  ['Work Scheduled — Rp', rp, 'r-sales']];
-  const body = rows => g.__all ? codes.map(k => block(k, rows)).join('') + block('__all', rows) : empty;
-  document.getElementById('t-meta-q').innerHTML  = head + body(qRows)  + '</tbody>';
-  document.getElementById('t-meta-ws').innerHTML = head + body(wsRows) + '</tbody>';
+  const rows = [['Lead masuk', int('n')],
+                ['Qualified', int('q')],
+                ['Qualified % (dari lead)', o => pct(o,'q','n'), 'r-pct'],
+                ['Work Scheduled', int('ws')],
+                ['Work Scheduled % (dari Qualified)', o => pct(o,'ws','q'), 'r-pct'],
+                ['Work Scheduled % (dari lead)', o => pct(o,'ws','n'), 'r-pct'],
+                ['Work Scheduled — Rp', rp, 'r-sales']];
+  const body = g.__all ? codes.map(k => block(k, rows)).join('') + block('__all', rows) : empty;
+  document.getElementById('t-meta').innerHTML = head + body + '</tbody>';
 }
 
 // ── The CS to-do list: which leads still need a Customer Type ─────────────────
