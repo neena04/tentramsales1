@@ -522,7 +522,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
     <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
     <b>Work Scheduled</b> = lead yang sudah bayar DP, dihitung pada <i>Tanggal DP</i> dengan nilai
-    <i>Sale</i> — apa pun stage-nya sekarang.
+    <i>Sale</i> — kecuali yang kemudian batal (Closed - Lost).
     <b>Qualified → Work Scheduled %</b> = Work Scheduled ÷ Qualified.
   </div>
 </div>
@@ -536,7 +536,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     (field baru sejak ±18 Sep 2026 — sebelumnya belum ada data).
     <b>Inbound → Qualified %</b> = Qualified ÷ Inbound.
     <b>Work Scheduled</b> = lead yang sudah bayar DP, dihitung pada <i>Tanggal DP</i> dengan nilai
-    <i>Sale</i> — apa pun stage-nya sekarang.
+    <i>Sale</i> — kecuali yang kemudian batal (Closed - Lost).
     <b>Qualified → Work Scheduled %</b> = Work Scheduled ÷ Qualified.
   </div>
 </div>
@@ -563,7 +563,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="box">
   <h2>Work Scheduled → Closed - Won</h2>
   <div class="sub">Semua tipe customer. Dari lead yang bayar DP (per Tanggal DP), berapa
-    yang sudah dipindah ke <b>Closed - Won</b> — dan sisanya kenapa belum</div>
+    yang sudah dipindah ke <b>Closed - Won</b> — dan sisanya kenapa belum. Tabel ini
+    <b>termasuk</b> lead yang batal sesudah DP; di tabel lain lead batal tidak dihitung
+    sebagai Work Scheduled</div>
   <div class="scroller"><table id="t-wsw"></table></div>
 </div>
 
@@ -588,7 +590,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <h2>Meta Ads — funnel per Kode Sumber Lead (mingguan)</h2>
   <div class="sub">Lead dengan Sumber Leads = Meta Ads (atau yang punya Kode Sumber Lead),
     semua tipe customer. Kolom = minggu lead masuk (Senin–Minggu). Qualified dan
-    <b>Work Scheduled</b> (sudah bayar DP, nilai = Sale) dihitung kapan pun terjadinya, tapi
+    <b>Work Scheduled</b> (sudah bayar DP dan tidak batal, nilai = Sale) dihitung kapan pun terjadinya, tapi
     tetap dicatat di minggu lead itu masuk</div>
   <div class="scroller"><table id="t-meta"></table></div>
   <div class="legend"><span class="swatch"></span>Minggu abu-abu masih berjalan — ~90% DP masuk
@@ -607,7 +609,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="box">
   <h2>Sumber Leads — per hari</h2>
-  <div class="sub">Lead Work Scheduled (sudah bayar DP), semua tipe customer digabung.
+  <div class="sub">Lead Work Scheduled (sudah bayar DP, tidak batal), semua tipe customer digabung.
     Dasar tanggal sama dengan baris Sales di atas (Tanggal DP), jadi baris TOTAL di sini =
     Tabel 1 + Tabel 2 + Tabel 3</div>
   <div class="scroller"><table id="t-source"></table></div>
@@ -701,6 +703,10 @@ function buildColumns(ym){
 # Appended into HTML_TEMPLATE just before </script>
 JS_RENDER = r"""
 // ── Aggregation ───────────────────────────────────────────────────────────────
+// Work Scheduled = DP paid and not cancelled since. A lead that paid the DP and then went
+// Closed - Lost is excluded from every Work Scheduled count and Rp — it only still shows
+// in the Work Scheduled → Closed - Won table, as a cancellation (Nina, 2026-10-02).
+const isWS = l => !!l.ad && l.s !== 143;
 function metricsFor(bucket){
   const m = {inbound:{}, qualified:{}, won:{}, sales:{}, lost:{}, reasons:{}};
   LEADS.forEach(l => {
@@ -709,7 +715,7 @@ function metricsFor(bucket){
       m.inbound[l.cd] = (m.inbound[l.cd]||0) + 1;
     }
     if(l.qd) m.qualified[l.qd] = (m.qualified[l.qd]||0) + 1;   // Qualified at date
-    if(l.ad){                                   // Group B — Work Scheduled, by Tanggal DP
+    if(isWS(l)){                                // Group B — Work Scheduled, by Tanggal DP
       m.won[l.ad]   = (m.won[l.ad]||0) + 1;
       m.sales[l.ad] = (m.sales[l.ad]||0) + l.p;
     }
@@ -876,7 +882,7 @@ function renderSource(ym, cols){
   const allDates = cols.flatMap(c => c.dates);
   const cnt = {}, val = {};          // source -> {date -> n}
   LEADS.forEach(l => {
-    if(!l.ad) return;
+    if(!isWS(l)) return;
     (cnt[l.sl] || (cnt[l.sl] = {}));
     (val[l.sl] || (val[l.sl] = {}));
     cnt[l.sl][l.ad] = (cnt[l.sl][l.ad] || 0) + 1;
@@ -1044,7 +1050,7 @@ function renderMeta(ym){
     for(const k of [l.ks || NOCODE, '__all']){
       add(k, 'n', l.cd, 1);
       if(l.qd) add(k, 'q', l.cd, 1);
-      if(l.ad){ add(k, 'ws', l.cd, 1); add(k, 'v', l.cd, l.p); }
+      if(isWS(l)){ add(k, 'ws', l.cd, 1); add(k, 'v', l.cd, l.p); }
     }
   });
   const codes = Object.keys(g).filter(k => k !== '__all' && k !== NOCODE).sort();
@@ -1094,7 +1100,7 @@ function renderMetaMonth(ym){
       const o = g[k] || (g[k] = {n:0, q:0, ws:0, v:0});
       o.n++;
       if(l.qd) o.q++;
-      if(l.ad){ o.ws++; o.v += l.p; }
+      if(isWS(l)){ o.ws++; o.v += l.p; }
     }
   });
   const codes = Object.keys(g).filter(k => k !== '__all' && k !== NOCODE).sort();
