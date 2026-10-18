@@ -34,7 +34,7 @@ HISTORY_FROM = datetime(2026, 3, 1, tzinfo=timezone.utc)
 # Working hours, WIB, as [start, end) hour windows. Lunch 12–13 is off the clock.
 # History: 08–22 -> 09–22 (2026-09-14) -> 09–12 + 13–18 (Nina, 2026-09-28).
 WORK_WINDOWS = [(9, 12), (13, 18)]
-HANG_LIMIT_MIN       = 15                       # "customer left hanging" threshold
+HANG_LIMIT_MIN       = 5                        # "customer left hanging" threshold (was 15; Nina, 2026-10-18)
 
 # Outgoing messages with created_by = 0 are a mix of automation and CS replying from
 # the WhatsApp phone app. Verified on 30 days of data (2026-09-14):
@@ -377,7 +377,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div class="box red" id="flags">
-  <h2>Customer menunggu lebih dari 15 menit</h2>
+  <h2>Customer menunggu lebih dari 5 menit</h2>
   <div class="sub">Dihitung dalam jam kerja 09:00–12:00 &amp; 13:00–18:00 WIB, semua jenis lead (baru / repeat,
     semua sumber, B2C / B2B). Tanggal = tanggal chat customer.</div>
   <div class="flagbar">
@@ -398,7 +398,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <li><b>Jam kerja 09:00–12:00 &amp; 13:00–18:00 WIB.</b> Hanya menit di dalam jam kerja yang dihitung —
       chat jam 17:50 yang dibalas jam 09:10 = 20 menit; chat jam 11:55 yang dibalas jam 13:05 = 10 menit (istirahat 12:00–13:00 tidak dihitung). Chat yang masuk <i>dan</i> dibalas di luar
       jam kerja tidak masuk rata-rata pada mode ini. Mode <b>Jam penuh</b> memakai selisih jam
-      biasa. Daftar &gt; 15 menit selalu memakai jam kerja.</li>
+      biasa. Daftar &gt; 5 menit selalu memakai jam kerja.</li>
     <li><b>Pesan otomatis bukan balasan.</b> Auto-reply (terkirim ≤ 15 detik setelah pesan
       customer, tanpa nama pengirim) dan pesan pengingat otomatis jam 08:00–08:15 (terkirim ke ≥ 4
       lead dalam 3 menit) diabaikan. Balasan tanpa nama pengirim yang bukan
@@ -506,8 +506,8 @@ const ROWS = [
   {label: 'Rata-rata semua', f: s => fmt(s.a)},
   {label: 'Tercepat (min)', f: s => cellT(s.mn)},
   {label: 'Terlama (max)', f: s => cellT(s.mx)},
-  {label: 'Dibalas ≤ 15 menit (jam kerja)', f: s => pct(s.fast)},
-  {grp: 'Customer menunggu > 15 menit (jam kerja)'},
+  {label: 'Dibalas ≤ 5 menit (jam kerja)', f: s => pct(s.fast)},
+  {grp: 'Customer menunggu > 5 menit (jam kerja)'},
   {label: 'Dibalas terlambat', f: (s, col) => jump(s.late, col)},
   {label: 'Belum dibalas', f: (s, col) => jump(s.open, col)},
 ];
@@ -537,8 +537,8 @@ function renderTable(){
   document.getElementById('kpis').innerHTML = [
     ['Rata-rata first response', fmt(mst.f), mst.fn + ' lead dibalas', false],
     ['Rata-rata consecutive response', fmt(mst.c), mst.cn + ' balasan', false],
-    ['Dibalas ≤ 15 menit', pct(mst.fast), 'dari semua balasan, jam kerja', false],
-    ['Customer menunggu > 15 menit', bad, mst.late + ' terlambat · ' + mst.open + ' belum dibalas', bad > 0],
+    ['Dibalas ≤ 5 menit', pct(mst.fast), 'dari semua balasan, jam kerja', false],
+    ['Customer menunggu > 5 menit', bad, mst.late + ' terlambat · ' + mst.open + ' belum dibalas', bad > 0],
   ].map(([k, n, s, b]) => `<div class="kpi${b ? ' bad' : ''}"><div class="k">${k}</div><div class="n">${n}</div><div class="s">${s}</div></div>`).join('');
 }
 
@@ -555,7 +555,7 @@ function renderFlags(){
   document.getElementById('flag-count').textContent =
     list.length + ' chat · ' + list.filter(t => !t.r).length + ' belum dibalas';
   const tbl = document.getElementById('t-flags');
-  if (!list.length) { tbl.innerHTML = '<tbody><tr><td class="empty">Tidak ada customer yang menunggu lebih dari 15 menit pada periode ini.</td></tr></tbody>'; return; }
+  if (!list.length) { tbl.innerHTML = '<tbody><tr><td class="empty">Tidak ada customer yang menunggu lebih dari 5 menit pada periode ini.</td></tr></tbody>'; return; }
   let h = '<thead><tr><th>Chat masuk</th><th>Lead ID</th><th>Customer</th><th class="num">Lama tidak dibalas</th><th>Dibalas</th><th>Oleh</th><th>Jenis</th></tr></thead><tbody>';
   let cur = null;
   for (const t of list) {
