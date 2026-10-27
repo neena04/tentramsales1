@@ -1146,7 +1146,16 @@ function renderBroadcast(ym, cols){
   tbl.innerHTML = h + camps.map(block).join('') + block('__all') + '</tbody>';
 
   const um = (BROADCAST.unmatched || []).map(id => byId[id]).filter(l => l && l.cd && inM.has(l.cd));
-  foot.innerHTML = 'Broadcast terakhir masih bisa dapat reply beberapa hari ke depan. ' +
+  // CS to-do: Broadcast leads still missing their 1A / 1B / 1C tag, newest first
+  const nt = LEADS.filter(l => l.sl === 'Broadcast' && !l.bt && l.cd && inM.has(l.cd))
+                  .sort((a,b) => b.cd.localeCompare(a.cd) || b.id - a.id);
+  const chip = l => `<a class="idchip" href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" ` +
+                    `rel="noopener" title="Masuk ${dayLabel(l.cd)}">${l.id}</a>`;
+  foot.innerHTML = (nt.length
+      ? `<div style="margin-bottom:10px"><b class="warnnum">${nt.length} lead Sumber Leads = Broadcast belum punya tag ` +
+        `1A / 1B / 1C</b> bulan ini — klik untuk buka di Kommo dan isi tag-nya:<br>${nt.map(chip).join(' ')}</div>`
+      : '<div style="margin-bottom:10px" class="ok">Semua lead Broadcast bulan ini sudah punya tag 1A / 1B / 1C.</div>') +
+    'Broadcast terakhir masih bisa dapat reply beberapa hari ke depan. ' +
     (um.length
       ? `<b class="warnnum">${um.length} lead bertag 1A/1B/1C bulan ini tidak ketemu di campaign log</b> ` +
         '(nomornya tidak ada di sheet, atau lead-nya dibuat sebelum tanggal kirim) — tidak dihitung di atas: ' +
