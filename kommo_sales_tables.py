@@ -41,6 +41,7 @@ CF_NOMINAL_DISKON     = 3444300   # lead, numeric  (not used in these tables, sp
 CF_DEAL_TYPE          = 3390854   # lead, select
 CF_SERVICE            = 3340252   # lead, multiselect
 CF_SUMBER_LEADS       = 3322396   # lead, select
+BROADCAST_TAGS        = ("1A", "1B", "1C")
 CF_KODE_SUMBER        = 3445148   # lead, select — Meta campaign code (1A1, 2A2, …), since ~2026-09-18
 CF_BILLING_PERIOD     = 3444516   # lead, text
 CF_CUSTOMER_TYPE      = 3444080   # CONTACT, select: B2C / B2B
@@ -380,6 +381,9 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
             "wd":       work_date,                 # Tanggal pengerjaan
             "sl":       cf_value(lead, CF_SUMBER_LEADS) or "(kosong)",
             "ks":       cf_value(lead, CF_KODE_SUMBER),
+            # Broadcast campaign lives in a tag (1A / 1B / 1C), not a field
+            "bt":       next((t["name"] for t in ((lead.get("_embedded") or {}).get("tags") or [])
+                              if t.get("name") in BROADCAST_TAGS), None),
             "p":        price,
             "ld":       lost_date,
             "lr":       lost_reason or "(tanpa alasan)",
@@ -469,9 +473,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #t-wsopen td.num,#t-wsopen th.num{text-align:right}
   #t-wsopen a{color:#6c5ce7;font-variant-numeric:tabular-nums}
   #t-wsw .c-metric{min-width:220px}
+  #t-rev .c-metric{min-width:230px}
+  #t-rev .r-src td.c-metric{font-weight:700}
+  #t-rev .r-sub td{color:#8a8f98;font-size:11px}
+  #t-rev .r-sub td.c-metric{padding-left:30px;font-weight:400}
+  .idchip{display:inline-block;background:#f4f3ff;color:#6c5ce7;text-decoration:none;border-radius:4px;
+          padding:1px 7px;margin:0 3px 3px 0;font-variant-numeric:tabular-nums}
+  .idchip:hover{background:#6c5ce7;color:#fff}
   #t-meta-month td,#t-meta-month th{min-width:96px}
   #t-meta-month .step{color:#8a8f98;font-weight:400;font-size:11px}
-  #t-source .c-metric{min-width:200px}
   .r-total td.c-metric{background:#fbfaff}
   .legend .swatch{display:inline-block;width:10px;height:10px;background:#c8c9d4;
                   border-radius:2px;vertical-align:-1px;margin-right:5px}
@@ -552,6 +562,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="box">
+  <h2>Revenue per Sumber Leads</h2>
+  <div class="sub">Work Scheduled dari Tabel 1 + 2 + 3 (sudah bayar DP, tidak batal), per
+    <b>Tanggal DP</b>, nilai = Sale. Meta Ads dirinci per <i>Kode Sumber Lead</i>, Broadcast
+    per tag <i>1A / 1B / 1C</i>. Total = bulan berjalan sampai hari ini. Tersedia mulai Agustus 2026</div>
+  <div class="scroller"><table id="t-rev"></table></div>
+  <div class="legend" id="rev-foot"></div>
+</div>
+
 <div class="box amber">
   <h2>Daftar lead tanpa Customer Type — untuk diisi CS</h2>
   <div class="sub">Lead dari Tabel 3, dikelompokkan per tanggal masuk. Klik nomornya untuk
@@ -605,14 +624,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     tabel mana pun, tapi ikut terhitung di board Kommo. Angkanya adalah kondisi saat ini,
     bukan riwayat: begitu di-accept, angkanya turun dan lead-nya pindah ke atas</div>
   <div class="scroller"><table id="t-recon"></table></div>
-</div>
-
-<div class="box">
-  <h2>Sumber Leads — per hari</h2>
-  <div class="sub">Lead Work Scheduled (sudah bayar DP, tidak batal), semua tipe customer digabung.
-    Dasar tanggal sama dengan baris Sales di atas (Tanggal DP), jadi baris TOTAL di sini =
-    Tabel 1 + Tabel 2 + Tabel 3</div>
-  <div class="scroller"><table id="t-source"></table></div>
 </div>
 
 <div class="note">
@@ -875,70 +886,90 @@ function renderRecon(ym, cols, imm){
   document.getElementById('t-recon').innerHTML = head + body + '</tbody>';
 }
 
-// ── Sumber Leads per day, all customer types ──────────────────────────────────
-// Same date basis and same lead set as the Sales rows of tables 1-3, so the TOTAL
-// rows here equal Tabel1 + Tabel2 + Tabel3 for every column.
-function renderSource(ym, cols){
-  const allDates = cols.flatMap(c => c.dates);
-  const cnt = {}, val = {};          // source -> {date -> n}
-  LEADS.forEach(l => {
-    if(!isWS(l)) return;
-    (cnt[l.sl] || (cnt[l.sl] = {}));
-    (val[l.sl] || (val[l.sl] = {}));
-    cnt[l.sl][l.ad] = (cnt[l.sl][l.ad] || 0) + 1;
-    val[l.sl][l.ad] = (val[l.sl][l.ad] || 0) + l.p;
-  });
+// ── Revenue per Sumber Leads, with Meta / Broadcast broken down ───────────────
+// Same lead set and date basis as the Work Scheduled rows of tables 1-3, so the
+// TOTAL rows equal Tabel 1 + 2 + 3 for every column.
+const REV_FROM = '2026-08';
+const NOSRC = '(kosong)';
+function revSub(l){
+  if(l.sl === 'Meta Ads')  return l.ks || '(tanpa kode)';
+  if(l.sl === 'Broadcast') return l.bt || '(tanpa tag)';
+  return null;
+}
 
-  // only sources that actually appear in this month, busiest first
-  const sources = Object.keys(cnt)
-    .map(s => [s, sumOver(cnt[s], allDates), sumOver(val[s], allDates)])
-    .filter(([, n]) => n > 0)
-    .sort((a, b) => (b[1] - a[1]) || (b[2] - a[2]))
-    .map(([s]) => s);
-
-  let head = '<thead><tr><th class="c-metric">Sumber Leads</th>';
-  cols.forEach(c => { head += `<th class="c-day">${c.label}</th>`; });
-  head += '<th class="c-total">Total</th></tr></thead>';
-
-  if(!sources.length){
-    document.getElementById('t-source').innerHTML = head +
-      `<tbody><tr><td class="c-metric">—</td><td colspan="${cols.length+1}" ` +
-      `style="text-align:left;color:#b2bec3">Belum ada deal yang closing di bulan ini</td>` +
-      `</tr></tbody>`;
+function renderRevenue(ym, cols){
+  const tbl = document.getElementById('t-rev'), foot = document.getElementById('rev-foot');
+  if(ym < REV_FROM){
+    tbl.innerHTML = '<tbody><tr><td style="text-align:left;color:#b2bec3;padding:14px 24px">' +
+      'Tabel ini hanya tersedia mulai Agustus 2026 — pilih bulan Agu, Sep, atau Okt</td></tr></tbody>';
+    foot.innerHTML = '';
     return;
   }
+  const allDates = cols.flatMap(c => c.dates), inM = new Set(allDates);
+  const cnt = {}, val = {}, sub = {};      // source -> {date -> x}; sub: source -> sub -> {cnt, val}
+  const tc = {}, tv = {};
+  const bump = (m, d, x) => { m[d] = (m[d]||0) + x; };
+  const missing = [];
+  LEADS.forEach(l => {
+    if(!isWS(l) || !inM.has(l.ad)) return;
+    const s = l.sl || NOSRC;
+    bump(cnt[s] || (cnt[s] = {}), l.ad, 1);
+    bump(val[s] || (val[s] = {}), l.ad, l.p);
+    bump(tc, l.ad, 1); bump(tv, l.ad, l.p);
+    const k = revSub(l);
+    if(k){
+      const o = (sub[s] || (sub[s] = {}))[k] || (sub[s][k] = {c:{}, v:{}});
+      bump(o.c, l.ad, 1); bump(o.v, l.ad, l.p);
+    }
+    if(s === NOSRC) missing.push(l);
+  });
 
-  const line = (label, map, money, cls) =>
-    `<tr class="${cls||''}${money ? ' r-sales' : ''}"><td class="c-metric">${label}</td>` +
-    cols.map(c => {
-      const v = sumOver(map, c.dates);
-      return money ? `<td title="${fmtRpFull(v)}">${fmtRp(v)}</td>` : `<td>${fmtInt(v)}</td>`;
-    }).join('') +
-    (money
-      ? `<td class="c-total" title="${fmtRpFull(sumOver(map, allDates))}">${fmtRp(sumOver(map, allDates))}</td></tr>`
-      : `<td class="c-total">${fmtInt(sumOver(map, allDates))}</td></tr>`);
+  const sources = Object.keys(val).filter(s => s !== NOSRC)
+    .sort((a,b) => sumOver(val[b], allDates) - sumOver(val[a], allDates));
+  sources.push(NOSRC);                       // always shown, so a gap in labelling is visible
+  const subKeys = s => Object.keys(sub[s] || {}).sort((a,b) => {
+    const pa = a.startsWith('('), pb = b.startsWith('(');
+    return pa !== pb ? (pa ? 1 : -1) : a.localeCompare(b);
+  });
 
-  // a per-date total across every source
-  const totalMap = m => {
-    const t = {};
-    Object.values(m).forEach(byDate => {
-      for(const d in byDate) t[d] = (t[d] || 0) + byDate[d];
+  let h = '<thead><tr><th class="c-metric">Metrik</th>';
+  cols.forEach(c => { h += `<th class="c-day">${c.label}</th>`; });
+  h += '<th class="c-total">Total</th></tr></thead><tbody>';
+  const rpCells = map => cols.map(c => { const v = sumOver(map||{}, c.dates);
+      return `<td title="${fmtRpFull(v)}">${fmtRp(v)}</td>`; }).join('') +
+    `<td class="c-total" title="${fmtRpFull(sumOver(map||{}, allDates))}">${fmtRp(sumOver(map||{}, allDates))}</td>`;
+  const nCells = map => cols.map(c => `<td>${fmtInt(sumOver(map||{}, c.dates))}</td>`).join('') +
+    `<td class="c-total">${fmtInt(sumOver(map||{}, allDates))}</td>`;
+  const grp = t => `<tr class="grp"><td class="c-metric">${t}</td><td colspan="${cols.length + 1}"></td></tr>`;
+
+  h += grp('Ringkasan — Tabel 1 + 2 + 3');
+  h += `<tr class="r-total r-sales"><td class="c-metric">TOTAL Revenue</td>${rpCells(tv)}</tr>`;
+  h += `<tr class="r-total"><td class="c-metric">TOTAL Work Scheduled</td>${nCells(tc)}</tr>`;
+
+  const section = (title, which, cells, totalMap, totalLabel) => {
+    let x = grp(title);
+    sources.forEach(s => {
+      const warn = s === NOSRC && sumOver(cnt[s]||{}, allDates) > 0 ? ' class="warnnum"' : '';
+      x += `<tr class="r-src${which === 'v' ? ' r-sales' : ''}"><td class="c-metric"><span${warn}>${s}</span></td>` +
+           cells((which === 'v' ? val : cnt)[s]) + '</tr>';
+      subKeys(s).forEach(k => {
+        x += `<tr class="r-sub${which === 'v' ? ' r-sales' : ''}"><td class="c-metric">↳ ${k}</td>` +
+             cells(sub[s][k][which === 'v' ? 'v' : 'c']) + '</tr>';
+      });
     });
-    return t;
+    return x + `<tr class="r-total${which === 'v' ? ' r-sales' : ''}"><td class="c-metric">${totalLabel}</td>${cells(totalMap)}</tr>`;
   };
+  h += section('Revenue per Sumber Leads', 'v', rpCells, tv, 'TOTAL Revenue');
+  h += section('Work Scheduled per Sumber Leads', 'c', nCells, tc, 'TOTAL Work Scheduled');
+  tbl.innerHTML = h + '</tbody>';
 
-  let body = '<tbody>';
-  body += `<tr class="grp"><td class="c-metric">Jumlah deal</td>` +
-          `<td colspan="${cols.length + 1}"></td></tr>`;
-  sources.forEach(s => { body += line(s, cnt[s], false); });
-  body += line('TOTAL deal', totalMap(cnt), false, 'r-total');
-
-  body += `<tr class="grp"><td class="c-metric">Nilai (Rp)</td>` +
-          `<td colspan="${cols.length + 1}"></td></tr>`;
-  sources.forEach(s => { body += line(s, val[s], true); });
-  body += line('TOTAL nilai', totalMap(val), true, 'r-total');
-
-  document.getElementById('t-source').innerHTML = head + body + '</tbody>';
+  // the labelling gap: Work Scheduled leads with no Sumber Leads, one click to Kommo
+  missing.sort((a,b) => a.ad.localeCompare(b.ad));
+  foot.innerHTML = missing.length
+    ? `<b class="warnnum">${missing.length} lead Work Scheduled tanpa Sumber Leads</b> bulan ini — klik untuk isi di Kommo: ` +
+      missing.map(l => `<a class="idchip" href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" ` +
+        `rel="noopener" title="DP ${dayLabel(l.ad)} · ${l.t} · ${fmtRpFull(l.p)}">${l.id}</a>`).join(' ')
+    : '<span class="ok">Semua lead Work Scheduled bulan ini sudah punya Sumber Leads.</span>';
 }
 
 // ── Work Scheduled -> Closed - Won, dated by Tanggal DP ─────────────────────────
@@ -1296,7 +1327,7 @@ function render(){
   renderTable('B2B', ym, cols, imm);
   renderTable('Unknown', ym, cols, imm);
   renderRecon(ym, cols, imm);
-  renderSource(ym, cols);
+  renderRevenue(ym, cols);
   renderWsWon(ym, cols);
   renderMetaMonth(ym);
   renderMeta(ym);
