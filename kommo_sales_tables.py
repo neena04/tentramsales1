@@ -474,6 +474,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #t-wsopen a{color:#6c5ce7;font-variant-numeric:tabular-nums}
   #t-wsw .c-metric{min-width:220px}
   #t-rev .c-metric{min-width:230px}
+  #t-rev .c-share{min-width:86px;background:#fbfaff;color:#6c5ce7;font-weight:700}
+  #t-rev .r-sub td.c-share{color:#a29bfe;font-weight:600}
   #t-rev .r-src td.c-metric{font-weight:700}
   #t-rev .r-sub td{color:#8a8f98;font-size:11px}
   #t-rev .r-sub td.c-metric{padding-left:30px;font-weight:400}
@@ -566,7 +568,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <h2>Revenue per Sumber Leads</h2>
   <div class="sub">Work Scheduled dari Tabel 1 + 2 + 3 (sudah bayar DP, tidak batal), per
     <b>Tanggal DP</b>, nilai = Sale. Meta Ads dirinci per <i>Kode Sumber Lead</i>, Broadcast
-    per tag <i>1A / 1B / 1C</i>. Total = bulan berjalan sampai hari ini. Tersedia mulai Agustus 2026</div>
+    per tag <i>1A / 1B / 1C</i>. Total = bulan berjalan sampai hari ini; <b>% dari total</b> =
+    porsi baris itu terhadap TOTAL bulan ini. Tersedia mulai Agustus 2026</div>
   <div class="scroller"><table id="t-rev"></table></div>
   <div class="legend" id="rev-foot"></div>
 </div>
@@ -934,13 +937,18 @@ function renderRevenue(ym, cols){
 
   let h = '<thead><tr><th class="c-metric">Metrik</th>';
   cols.forEach(c => { h += `<th class="c-day">${c.label}</th>`; });
-  h += '<th class="c-total">Total</th></tr></thead><tbody>';
+  h += '<th class="c-total">Total</th><th class="c-share">% dari total</th></tr></thead><tbody>';
+  // share of the month's grand total (revenue rows vs TOTAL Revenue, counts vs TOTAL Work Scheduled)
+  const gv = sumOver(tv, allDates), gc = sumOver(tc, allDates);
+  const share = (x, g) => `<td class="c-share">${g ? (x/g*100).toFixed(1).replace('.', ',') + '%' : '<span class="zero">—</span>'}</td>`;
   const rpCells = map => cols.map(c => { const v = sumOver(map||{}, c.dates);
       return `<td title="${fmtRpFull(v)}">${fmtRp(v)}</td>`; }).join('') +
-    `<td class="c-total" title="${fmtRpFull(sumOver(map||{}, allDates))}">${fmtRp(sumOver(map||{}, allDates))}</td>`;
+    `<td class="c-total" title="${fmtRpFull(sumOver(map||{}, allDates))}">${fmtRp(sumOver(map||{}, allDates))}</td>` +
+    share(sumOver(map||{}, allDates), gv);
   const nCells = map => cols.map(c => `<td>${fmtInt(sumOver(map||{}, c.dates))}</td>`).join('') +
-    `<td class="c-total">${fmtInt(sumOver(map||{}, allDates))}</td>`;
-  const grp = t => `<tr class="grp"><td class="c-metric">${t}</td><td colspan="${cols.length + 1}"></td></tr>`;
+    `<td class="c-total">${fmtInt(sumOver(map||{}, allDates))}</td>` +
+    share(sumOver(map||{}, allDates), gc);
+  const grp = t => `<tr class="grp"><td class="c-metric">${t}</td><td colspan="${cols.length + 2}"></td></tr>`;
 
   h += grp('Ringkasan — Tabel 1 + 2 + 3');
   h += `<tr class="r-total r-sales"><td class="c-metric">TOTAL Revenue</td>${rpCells(tv)}</tr>`;
