@@ -431,15 +431,15 @@ def build_broadcast(rows, leads, contacts):
         return d
 
     contact_by_id = {c["id"]: c for c in contacts}
-    tagged = []                                   # (lead_id, created date, phones, tag)
+    tagged, untagged = [], []                     # (lead_id, created date, phones, tag)
     for l in leads:
         tags = {t.get("name") for t in ((l.get("_embedded") or {}).get("tags") or [])}
         bt = next((t for t in BROADCAST_TAGS if t in tags), None)
-        if not bt:
+        if not bt and cf_value(l, CF_SUMBER_LEADS) != "Broadcast":
             continue
         phones = {p for c in ((l.get("_embedded") or {}).get("contacts") or [])
                   for p in norm_phones(contact_by_id.get(c["id"], {}))}
-        tagged.append((l["id"], ts_to_date(l.get("created_at")), phones, bt))
+        (tagged if bt else untagged).append((l["id"], ts_to_date(l.get("created_at")), phones, bt))
 
     sends_by_phone = defaultdict(list)            # phone -> [(date, campaign)]
     agg = {}                                      # (date, campaign) -> {s, f, r: [lead ids]}
@@ -455,22 +455,35 @@ def build_broadcast(rows, leads, contacts):
             a["f"] += 1
 
     # a reply belongs to the latest send to that number on or before the lead's creation
-    unmatched = []
-    for lid, cd, phones, bt in tagged:
+    def send_for(cd, phones):
         best = None
         for p in phones:
             for d, c in sends_by_phone.get(p, []):
                 if cd and d <= cd and (best is None or d > best[0]):
                     best = (d, c)
+        return best
+
+    unmatched = []
+    for lid, cd, phones, bt in tagged:
+        best = send_for(cd, phones)
         if best:
             agg[best]["r"].append(lid)
         elif cd and cd >= "2026-10-01":
             unmatched.append(lid)                 # tagged, but no send found for the number
 
+    # Sumber Leads = Broadcast without a tag: stays out of the campaigns (Nina, 2026-10-27),
+    # but is dated by the send to its number, like a tagged reply. No send -> not in "nt".
+    nt = []
+    for lid, cd, phones, _ in untagged:
+        best = send_for(cd, phones)
+        if best:
+            nt.append([best[0], lid])
+
     out = [[d, c, a["s"], a["f"], a["r"]] for (d, c), a in sorted(agg.items())]
     print(f"Broadcast: {sum(x[2] for x in out)} sent, {sum(len(x[4]) for x in out)} replies "
-          f"matched, {len(unmatched)} tagged leads without a send")
-    return {"rows": out, "unmatched": unmatched}
+          f"matched, {len(unmatched)} tagged leads without a send, "
+          f"{len(nt)} of {len(untagged)} untagged dated by their send")
+    return {"rows": out, "unmatched": unmatched, "nt": nt}
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
@@ -660,9 +673,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     campaign log</i>). <b>Reply</b> = customer membalas, yaitu lead Kommo bertag 1A / 1B / 1C dengan
     nomor yang sama, dibuat pada / sesudah tanggal kirim — dicatat di tanggal kirim, kapan pun
     balasannya masuk. Qualified dan Work Scheduled + Closed Won mengikuti aturan tabel di atas.
-    Lead dengan Sumber Leads = Broadcast tapi <b>tanpa tag</b> ditampilkan terpisah, per tanggal
-    lead masuk, dan ikut dihitung di TOTAL (kecuali baris terkirim). Data sheet diambil ulang
-    setiap refresh</div>
+    Lead dengan Sumber Leads = Broadcast tapi <b>tanpa tag</b> ditampilkan terpisah (tanpa campaign),
+    tapi tetap dicatat di tanggal broadcast dikirim ke nomornya, dan ikut dihitung di TOTAL. Data
+    sheet diambil ulang setiap refresh</div>
   <div class="scroller"><table id="t-bc"></table></div>
   <div class="legend" id="bc-foot"></div>
 </div>
@@ -1097,15 +1110,22 @@ function renderBroadcast(ym, cols){
       });
     }
   });
-  // Sumber Leads = Broadcast but no 1A/1B/1C tag: no send to tie them to, so they sit
-  // on the day the lead came in, with no "sent" count. They do count in the TOTAL.
+  // Sumber Leads = Broadcast but no 1A/1B/1C tag: own block, no campaign. Dated by the
+  // send to that number (from the sheet) like a tagged reply; if the number was never
+  // sent to, it falls back to the day the lead came in and doesn't count toward Reply %.
   const NOTAG = '(tanpa tag)';
+  const ntSend = {}; (BROADCAST.nt || []).forEach(([d, id]) => { ntSend[id] = d; });
+  const noSend = [];
   LEADS.forEach(l => {
-    if(l.sl !== 'Broadcast' || l.bt || !l.cd || !inM.has(l.cd)) return;
+    if(l.sl !== 'Broadcast' || l.bt) return;
+    const d = ntSend[l.id] || l.cd;
+    if(!d || !inM.has(d)) return;
+    if(!ntSend[l.id]) noSend.push(l);
     for(const k of [NOTAG, '__all']){
-      add(k, 'r', l.cd, 1);
-      if(l.qd) add(k, 'q', l.cd, 1);
-      if(isWS(l)){ add(k, 'ws', l.cd, 1); add(k, 'v', l.cd, l.p); }
+      add(k, 'r', d, 1);
+      if(ntSend[l.id]) add(k, 'rm', d, 1);
+      if(l.qd) add(k, 'q', d, 1);
+      if(isWS(l)){ add(k, 'ws', d, 1); add(k, 'v', d, l.p); }
     }
   });
 
@@ -1129,11 +1149,11 @@ function renderBroadcast(ym, cols){
             `<td colspan="${cols.length+1}"></td></tr>`;
     const notag = k === NOTAG;
     [...(notag ? [] : [['Broadcast terkirim', int(o,'s')]]),
-     [notag ? 'Lead masuk (tanggal lead masuk)' : 'Reply', int(o,'r')],
+     [notag ? 'Reply (tanpa tag)' : 'Reply', int(o,'r')],
      // reply rate uses only replies matched to a send, so untagged leads can't inflate it
      ...(notag ? [] : [['Reply % (dari terkirim)', pct(o,'rm','s'), 'r-pct']]),
      ['Qualified', int(o,'q')],
-     [notag ? 'Qualified % (dari lead)' : 'Qualified % (dari reply)', pct(o,'q','r'), 'r-pct'],
+     ['Qualified % (dari reply)', pct(o,'q','r'), 'r-pct'],
      ['Work Scheduled + Closed Won', int(o,'ws')],
      ['Work Scheduled % (dari Qualified)', pct(o,'ws','q'), 'r-pct'],
      ['Work Scheduled — Rp', rp(o), 'r-sales'],
@@ -1147,7 +1167,7 @@ function renderBroadcast(ym, cols){
 
   const um = (BROADCAST.unmatched || []).map(id => byId[id]).filter(l => l && l.cd && inM.has(l.cd));
   // CS to-do: Broadcast leads still missing their 1A / 1B / 1C tag, newest first
-  const nt = LEADS.filter(l => l.sl === 'Broadcast' && !l.bt && l.cd && inM.has(l.cd))
+  const nt = LEADS.filter(l => l.sl === 'Broadcast' && !l.bt && inM.has(ntSend[l.id] || l.cd))
                   .sort((a,b) => b.cd.localeCompare(a.cd) || b.id - a.id);
   const chip = l => `<a class="idchip" href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" ` +
                     `rel="noopener" title="Masuk ${dayLabel(l.cd)}">${l.id}</a>`;
@@ -1155,6 +1175,10 @@ function renderBroadcast(ym, cols){
       ? `<div style="margin-bottom:10px"><b class="warnnum">${nt.length} lead Sumber Leads = Broadcast belum punya tag ` +
         `1A / 1B / 1C</b> bulan ini — klik untuk buka di Kommo dan isi tag-nya:<br>${nt.map(chip).join(' ')}</div>`
       : '<div style="margin-bottom:10px" class="ok">Semua lead Broadcast bulan ini sudah punya tag 1A / 1B / 1C.</div>') +
+    (noSend.length
+      ? `<div style="margin-bottom:10px">Dari lead tanpa tag itu, <b class="warnnum">${noSend.length} nomornya tidak ada di campaign log</b> ` +
+        `— dicatat di tanggal lead masuk dan tidak ikut Reply %: ${noSend.map(chip).join(' ')}</div>`
+      : '') +
     'Broadcast terakhir masih bisa dapat reply beberapa hari ke depan. ' +
     (um.length
       ? `<b class="warnnum">${um.length} lead bertag 1A/1B/1C bulan ini tidak ketemu di campaign log</b> ` +
