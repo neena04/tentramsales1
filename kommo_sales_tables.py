@@ -42,6 +42,11 @@ CF_DEAL_TYPE          = 3390854   # lead, select
 CF_SERVICE            = 3340252   # lead, multiselect
 CF_SUMBER_LEADS       = 3322396   # lead, select
 BROADCAST_TAGS        = ("1A", "1B", "1C")
+# WhatsApp broadcast sends live only in Sebastian's "Customer database" sheet, tab
+# "campaign log" (link-shared, so the CSV export needs no login). Kommo only sees a
+# customer once they reply: the reply becomes a lead tagged 1A / 1B / 1C.
+CAMPAIGN_LOG_CSV = ("https://docs.google.com/spreadsheets/d/"
+                    "1tmjsujZreBNvcCG3uS3N1794ZHP2Y2YUf4-fbEiP1g4/export?format=csv&gid=895760407")
 CF_KODE_SUMBER        = 3445148   # lead, select — Meta campaign code (1A1, 2A2, …), since ~2026-09-18
 CF_BILLING_PERIOD     = 3444516   # lead, text
 CF_CUSTOMER_TYPE      = 3444080   # CONTACT, select: B2C / B2B
@@ -198,6 +203,22 @@ def fetch_events():
         by_lead[lid].sort(key=lambda e: e["created_at"])
     print(f" {total} events across {len(by_lead)} leads")
     return by_lead
+
+
+def fetch_campaign_log():
+    """Rows of the campaign log sheet, or None if it can't be read (page still builds)."""
+    import csv, io
+    try:
+        with urllib.request.urlopen(CAMPAIGN_LOG_CSV, timeout=60) as r:
+            text = r.read().decode("utf-8")
+        rows = list(csv.DictReader(io.StringIO(text)))
+        if rows and "Date" in rows[0] and "WhatsApp number" in rows[0]:
+            print(f"Campaign log: {len(rows)} rows")
+            return rows
+        print("Campaign log: unexpected columns — skipped")
+    except Exception as e:
+        print(f"Campaign log: could not read ({e}) — skipped")
+    return None
 
 
 # ── Transform ─────────────────────────────────────────────────────────────────
@@ -393,6 +414,65 @@ def build_dataset(leads, contacts, events_by_lead, loss_reasons):
     return dataset, dq
 
 
+def build_broadcast(rows, leads, contacts):
+    """Per (send date, campaign): sends, failed sends and the Kommo leads that replied.
+
+    Only aggregates and lead ids leave this function — sales.html is a public page,
+    so no phone numbers or names from the sheet are embedded.
+    """
+    if rows is None:
+        return None
+    def norm(v):
+        d = re.sub(r"\D", "", str(v or ""))
+        if d.startswith("0"):
+            d = "62" + d[1:]
+        elif d.startswith("8"):
+            d = "62" + d
+        return d
+
+    contact_by_id = {c["id"]: c for c in contacts}
+    tagged = []                                   # (lead_id, created date, phones, tag)
+    for l in leads:
+        tags = {t.get("name") for t in ((l.get("_embedded") or {}).get("tags") or [])}
+        bt = next((t for t in BROADCAST_TAGS if t in tags), None)
+        if not bt:
+            continue
+        phones = {p for c in ((l.get("_embedded") or {}).get("contacts") or [])
+                  for p in norm_phones(contact_by_id.get(c["id"], {}))}
+        tagged.append((l["id"], ts_to_date(l.get("created_at")), phones, bt))
+
+    sends_by_phone = defaultdict(list)            # phone -> [(date, campaign)]
+    agg = {}                                      # (date, campaign) -> {s, f, r: [lead ids]}
+    for r in rows:
+        d, c = (r.get("Date") or "").strip(), (r.get("Campaign") or "").strip().upper()
+        if not re.match(r"\d{4}-\d{2}-\d{2}$", d) or not c:
+            continue
+        a = agg.setdefault((d, c), {"s": 0, "f": 0, "r": []})
+        if (r.get("Send status") or "").strip().lower() == "sent":
+            a["s"] += 1
+            sends_by_phone[norm(r.get("WhatsApp number"))].append((d, c))
+        else:
+            a["f"] += 1
+
+    # a reply belongs to the latest send to that number on or before the lead's creation
+    unmatched = []
+    for lid, cd, phones, bt in tagged:
+        best = None
+        for p in phones:
+            for d, c in sends_by_phone.get(p, []):
+                if cd and d <= cd and (best is None or d > best[0]):
+                    best = (d, c)
+        if best:
+            agg[best]["r"].append(lid)
+        elif cd and cd >= "2026-10-01":
+            unmatched.append(lid)                 # tagged, but no send found for the number
+
+    out = [[d, c, a["s"], a["f"], a["r"]] for (d, c), a in sorted(agg.items())]
+    print(f"Broadcast: {sum(x[2] for x in out)} sent, {sum(len(x[4]) for x in out)} replies "
+          f"matched, {len(unmatched)} tagged leads without a send")
+    return {"rows": out, "unmatched": unmatched}
+
+
 # ── HTML ──────────────────────────────────────────────────────────────────────
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="id">
@@ -574,6 +654,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="legend" id="rev-foot"></div>
 </div>
 
+<div class="box">
+  <h2>Broadcast — funnel per campaign</h2>
+  <div class="sub">Kolom = <b>tanggal broadcast dikirim</b> (dari sheet <i>Customer database →
+    campaign log</i>). <b>Reply</b> = customer membalas, yaitu lead Kommo bertag 1A / 1B / 1C dengan
+    nomor yang sama, dibuat pada / sesudah tanggal kirim — dicatat di tanggal kirim, kapan pun
+    balasannya masuk. Qualified dan Work Scheduled + Closed Won mengikuti aturan tabel di atas.
+    Lead dengan Sumber Leads = Broadcast tapi <b>tanpa tag</b> ditampilkan terpisah, per tanggal
+    lead masuk, dan ikut dihitung di TOTAL (kecuali baris terkirim). Data sheet diambil ulang
+    setiap refresh</div>
+  <div class="scroller"><table id="t-bc"></table></div>
+  <div class="legend" id="bc-foot"></div>
+</div>
+
 <div class="box amber">
   <h2>Daftar lead tanpa Customer Type — untuk diisi CS</h2>
   <div class="sub">Lead dari Tabel 3, dikelompokkan per tanggal masuk. Klik nomornya untuk
@@ -647,6 +740,7 @@ const LEADS = __LEADS__;
 const DQ    = __DQ__;
 const REQUESTS = __REQUESTS__;
 const TARGETS = __TARGETS__;
+const BROADCAST = __BROADCAST__;
 const TODAY = "__TODAY__";
 const SUBDOMAIN = "__SUBDOMAIN__";
 const STAGES = __STAGES__;
@@ -978,6 +1072,86 @@ function renderRevenue(ym, cols){
       missing.map(l => `<a class="idchip" href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" ` +
         `rel="noopener" title="DP ${dayLabel(l.ad)} · ${l.t} · ${fmtRpFull(l.p)}">${l.id}</a>`).join(' ')
     : '<span class="ok">Semua lead Work Scheduled bulan ini sudah punya Sumber Leads.</span>';
+}
+
+// ── Broadcast funnel: sheet sends -> Kommo replies -> qualified -> work scheduled ─
+function renderBroadcast(ym, cols){
+  const tbl = document.getElementById('t-bc'), foot = document.getElementById('bc-foot');
+  if(!BROADCAST){
+    tbl.innerHTML = '<tbody><tr><td style="text-align:left;color:#b2bec3;padding:14px 24px">' +
+      'Sheet campaign log tidak bisa dibaca saat build — cek apakah link-nya masih bisa dibuka</td></tr></tbody>';
+    foot.innerHTML = ''; return;
+  }
+  const byId = {}; LEADS.forEach(l => { byId[l.id] = l; });
+  const allDates = cols.flatMap(c => c.dates), inM = new Set(allDates);
+  const g = {};                          // campaign -> {s, f, r, q, ws, v}: {date -> x}
+  const add = (k, f, d, x) => { const o = g[k] || (g[k] = {s:{}, f:{}, r:{}, rm:{}, q:{}, ws:{}, v:{}}); o[f][d] = (o[f][d]||0) + x; };
+  BROADCAST.rows.forEach(([d, c, sent, failed, rids]) => {
+    if(!inM.has(d)) return;
+    for(const k of [c, '__all']){
+      add(k, 's', d, sent); add(k, 'f', d, failed); add(k, 'r', d, rids.length); add(k, 'rm', d, rids.length);
+      rids.forEach(id => {
+        const l = byId[id]; if(!l) return;
+        if(l.qd) add(k, 'q', d, 1);
+        if(isWS(l)){ add(k, 'ws', d, 1); add(k, 'v', d, l.p); }
+      });
+    }
+  });
+  // Sumber Leads = Broadcast but no 1A/1B/1C tag: no send to tie them to, so they sit
+  // on the day the lead came in, with no "sent" count. They do count in the TOTAL.
+  const NOTAG = '(tanpa tag)';
+  LEADS.forEach(l => {
+    if(l.sl !== 'Broadcast' || l.bt || !l.cd || !inM.has(l.cd)) return;
+    for(const k of [NOTAG, '__all']){
+      add(k, 'r', l.cd, 1);
+      if(l.qd) add(k, 'q', l.cd, 1);
+      if(isWS(l)){ add(k, 'ws', l.cd, 1); add(k, 'v', l.cd, l.p); }
+    }
+  });
+
+  let h = '<thead><tr><th class="c-metric">Campaign</th>';
+  cols.forEach(c => { h += `<th class="c-day">${c.label}</th>`; });
+  h += '<th class="c-total">Total</th></tr></thead><tbody>';
+  if(!g.__all){
+    tbl.innerHTML = h + `<tr><td class="c-metric">—</td><td colspan="${cols.length+1}" style="text-align:left;color:#b2bec3">` +
+      'Tidak ada broadcast yang dikirim di bulan ini</td></tr></tbody>';
+    foot.innerHTML = ''; return;
+  }
+  const cell = fn => cols.map(c => `<td>${fn(c.dates)}</td>`).join('') + `<td class="c-total">${fn(allDates)}</td>`;
+  const int = (o, f) => ds => fmtInt(sumOver(o[f], ds));
+  const pct = (o, a, b) => ds => { const x = sumOver(o[a], ds), y = sumOver(o[b], ds);
+    return y ? (x/y*100).toFixed(1).replace('.', ',') + '%' : '<span class="zero">—</span>'; };
+  const rp = o => ds => { const v = sumOver(o.v, ds); return `<span title="${fmtRpFull(v)}">${fmtRp(v)}</span>`; };
+  const block = k => {
+    const o = g[k];
+    const label = k === '__all' ? 'TOTAL Broadcast' : k === NOTAG ? 'Tanpa tag — Sumber Leads = Broadcast' : 'Campaign ' + k;
+    let x = `<tr class="grp"><td class="c-metric">${label}</td>` +
+            `<td colspan="${cols.length+1}"></td></tr>`;
+    const notag = k === NOTAG;
+    [...(notag ? [] : [['Broadcast terkirim', int(o,'s')]]),
+     [notag ? 'Lead masuk (tanggal lead masuk)' : 'Reply', int(o,'r')],
+     // reply rate uses only replies matched to a send, so untagged leads can't inflate it
+     ...(notag ? [] : [['Reply % (dari terkirim)', pct(o,'rm','s'), 'r-pct']]),
+     ['Qualified', int(o,'q')],
+     [notag ? 'Qualified % (dari lead)' : 'Qualified % (dari reply)', pct(o,'q','r'), 'r-pct'],
+     ['Work Scheduled + Closed Won', int(o,'ws')],
+     ['Work Scheduled % (dari Qualified)', pct(o,'ws','q'), 'r-pct'],
+     ['Work Scheduled — Rp', rp(o), 'r-sales'],
+     ...(notag ? [] : [['Gagal terkirim', int(o,'f'), 'r-sub']])
+    ].forEach(([name, fn, cls]) => { x += `<tr class="${cls||''}"><td class="c-metric">${name}</td>${cell(fn)}</tr>`; });
+    return x;
+  };
+  const camps = Object.keys(g).filter(k => k !== '__all' && k !== NOTAG).sort();
+  if(g[NOTAG]) camps.push(NOTAG);
+  tbl.innerHTML = h + camps.map(block).join('') + block('__all') + '</tbody>';
+
+  const um = (BROADCAST.unmatched || []).map(id => byId[id]).filter(l => l && l.cd && inM.has(l.cd));
+  foot.innerHTML = 'Broadcast terakhir masih bisa dapat reply beberapa hari ke depan. ' +
+    (um.length
+      ? `<b class="warnnum">${um.length} lead bertag 1A/1B/1C bulan ini tidak ketemu di campaign log</b> ` +
+        '(nomornya tidak ada di sheet, atau lead-nya dibuat sebelum tanggal kirim) — tidak dihitung di atas: ' +
+        um.map(l => `<a class="idchip" href="https://${SUBDOMAIN}.kommo.com/leads/detail/${l.id}" target="_blank" rel="noopener">${l.id}</a>`).join(' ')
+      : 'Semua lead bertag 1A/1B/1C bulan ini ketemu pasangannya di campaign log.');
 }
 
 // ── Work Scheduled -> Closed - Won, dated by Tanggal DP ─────────────────────────
@@ -1336,6 +1510,7 @@ function render(){
   renderTable('Unknown', ym, cols, imm);
   renderRecon(ym, cols, imm);
   renderRevenue(ym, cols);
+  renderBroadcast(ym, cols);
   renderWsWon(ym, cols);
   renderMetaMonth(ym);
   renderMeta(ym);
@@ -1374,13 +1549,14 @@ function render(){
 """
 
 
-def build_html(dataset, dq, unsorted=None):
+def build_html(dataset, dq, unsorted=None, broadcast=None):
     tpl = HTML_TEMPLATE.replace("</script>", JS_RENDER + "\n</script>")
     return (tpl
         .replace("__LEADS__",     json.dumps(dataset, ensure_ascii=False, separators=(",", ":")))
         .replace("__DQ__",        json.dumps(dq))
         .replace("__REQUESTS__",  json.dumps(unsorted or {}))
         .replace("__TARGETS__",   json.dumps(TARGETS))
+        .replace("__BROADCAST__", json.dumps(broadcast, separators=(",", ":")))
         .replace("__SUBDOMAIN__", SUBDOMAIN)
         .replace("__STAGES__",    json.dumps(STAGE_LABELS))
         .replace("__TODAY__",     (datetime.utcnow() + timedelta(hours=TZ_OFFSET)).strftime("%Y-%m-%d"))
@@ -1402,6 +1578,7 @@ def main():
     unsorted       = fetch_unsorted()
 
     dataset, dq = build_dataset(leads, contacts, events_by_lead, loss_reasons)
+    broadcast   = build_broadcast(fetch_campaign_log(), leads, contacts)
 
     print("\nData quality:")
     for k, v in dq.items():
@@ -1411,7 +1588,7 @@ def main():
         buckets[r["t"]] += 1
     print(f"\nBuckets: B2C {buckets['B2C']} · B2B {buckets['B2B']} · Unknown {buckets['Unknown']}")
 
-    html = build_html(dataset, dq, unsorted)
+    html = build_html(dataset, dq, unsorted, broadcast)
     # SALES_OUT lets the GitHub Actions runner write into the checked-out repo,
     # where ~/tentramsales1 does not exist.
     out = os.environ.get("SALES_OUT") or os.path.expanduser("~/tentramsales1/sales.html")
