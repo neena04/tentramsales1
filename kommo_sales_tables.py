@@ -758,6 +758,7 @@ const TODAY = "__TODAY__";
 const SUBDOMAIN = "__SUBDOMAIN__";
 const STAGES = __STAGES__;
 const GENERATED_AT = "__GENERATED_DATE__";
+const GENERATED_FULL = "__GENERATED__";
 const MONTHS_ID = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 
 let mode = 'daily';
@@ -1503,34 +1504,48 @@ async function doRefresh(){
   }
 }
 
+// Wait for the new sales.html to go live. The page asks its own host (no rate limit)
+// whether "di-generate" changed; GitHub is asked only once a minute, to catch a failed
+// run — unauthenticated GitHub API calls are capped at 60/hour, and the old 5-second
+// poll ran out after ~5 minutes, which is what produced the "Timeout" message.
 async function pollRun(){
   const started = Date.now();
   const btn = document.getElementById('refresh-btn');
+  const mine = r => r && new Date(r.created_at).getTime() >= started - 2*60*1000;
+  let n = 0;
   const tick = async () => {
-    if(Date.now() - started > 10*60*1000){
-      setStatus('Timeout — cek tab Actions di GitHub', 'err');
+    n++;
+    const mins = Math.floor((Date.now() - started) / 60000);
+    if(Date.now() - started > 30*60*1000){
+      setStatus('Belum selesai setelah 30 menit — cek tab Actions di GitHub', 'err');
       btn.disabled = false;
       return;
     }
     try {
-      const d = await (await fetch(GH_RUNS)).json();
-      const run = d.workflow_runs && d.workflow_runs[0];
-      if(run && run.status === 'completed'){
-        if(run.conclusion === 'success'){
-          setStatus('Selesai — memuat ulang halaman…', 'ok');
-          setTimeout(() => location.reload(true), 20000);
-        } else {
-          setStatus('Gagal: ' + run.conclusion, 'err');
-          btn.disabled = false;
-        }
+      const html = await (await fetch('sales.html?_=' + Date.now(), {cache: 'no-store'})).text();
+      const m = html.match(/di-generate ([0-9: -]+) WIB/);
+      if(m && m[1].trim() !== GENERATED_FULL){
+        setStatus('Selesai — memuat ulang halaman…', 'ok');
+        setTimeout(() => location.reload(), 1500);
         return;
       }
-      const secs = Math.round((Date.now() - started)/1000);
-      setStatus(`Sedang berjalan… ${secs}s`);
     } catch(e){ /* keep polling */ }
-    setTimeout(tick, 5000);
+    if(n % 4 === 0){
+      try {
+        const d = await (await fetch(GH_RUNS)).json();
+        const run = d.workflow_runs && d.workflow_runs[0];
+        if(mine(run) && run.status === 'completed' && run.conclusion !== 'success'){
+          setStatus('Gagal: ' + run.conclusion + ' — cek tab Actions di GitHub', 'err');
+          btn.disabled = false;
+          return;
+        }
+      } catch(e){ /* GitHub busy or rate-limited — the page check still works */ }
+    }
+    setStatus(`Sedang berjalan… ${mins} menit (biasanya ±3–4 menit)`);
+    setTimeout(tick, 15000);
   };
-  setTimeout(tick, 5000);
+  setStatus('Sedang berjalan…');
+  setTimeout(tick, 15000);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
