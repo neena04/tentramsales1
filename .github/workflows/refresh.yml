@@ -46,36 +46,20 @@ jobs:
           fi
           python3 kommo_sales_tables.py --no-git
 
+      # Publish sales.html straight away (~3 min in) instead of after cs.html (~8 more
+      # min): the dashboard's Refresh button waits for a new sales.html to go live.
+      - name: Publish sales.html
+        env:
+          FILES: sales.html
+        run: bash .github/publish.sh
+
       - name: Build cs.html (CS Quality) from Kommo
         env:
           KOMMO_TOKEN: ${{ secrets.KOMMO_TOKEN }}
           CS_OUT: cs.html
         run: python3 kommo_cs_quality.py --no-git
 
-      - name: Commit and push if it changed
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # The build takes minutes, and Nina's Mac pushes sales.html/index.html from its
-          # launchd jobs whenever it wakes up — run #36 (16 Sep) was rejected that way.
-          # So commit onto whatever main is NOW: reset --mixed keeps the freshly generated
-          # files in the working tree while moving HEAD to the latest remote commit, and
-          # only these two generated files are ever staged, so a concurrent push of
-          # index.html (or anything else) survives untouched.
-          for attempt in 1 2 3; do
-            git fetch origin main
-            git reset --mixed FETCH_HEAD
-            git add sales.html cs.html
-            if git diff --cached --quiet; then
-              echo "sales.html and cs.html unchanged — nothing to commit"
-              exit 0
-            fi
-            git commit -m "sales tables $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB"
-            if git push origin HEAD:main; then
-              exit 0
-            fi
-            echo "::warning::push rejected (someone else pushed first) — retry $attempt/3"
-            sleep 5
-          done
-          echo "::error::could not push after 3 attempts"
-          exit 1
+      - name: Publish cs.html
+        env:
+          FILES: cs.html
+        run: bash .github/publish.sh
